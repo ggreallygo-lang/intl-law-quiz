@@ -1,0 +1,116 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, maximum-scale=1, user-scalable=no" />
+  <meta name="theme-color" content="#4f46e5" />
+  <title>卡片题库 · 背题刷题考试</title>
+  <link rel="manifest" href="manifest.webmanifest" />
+  <link rel="icon" href="icon.svg" type="image/svg+xml" />
+  <link rel="apple-touch-icon" href="icon.svg" />
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <!-- 全局错误横幅：任何未捕获异常都会在这里显示，避免白屏无提示 -->
+  <div class="crashbar hidden" id="crashbar"></div>
+
+  <!-- 顶部栏 -->
+  <div class="appbar">
+    <button class="back hidden" id="backBtn">‹ 返回</button>
+    <h1 id="title">卡片题库</h1>
+    <span class="spacer"></span>
+    <button class="iconbtn" id="themeBtn" title="切换深色">🌓</button>
+  </div>
+
+  <!-- 首页：题库列表 + 导入 -->
+  <div class="view" id="view-home">
+    <div class="seg" id="importSeg" style="margin-bottom:14px">
+      <button data-v="file" class="on">📂 选择文件</button>
+      <button data-v="paste">📋 粘贴文本</button>
+    </div>
+    <div class="drop" id="dropZone">
+      📥 点击选择或把 .md / .txt 文件拖到这里<br />
+      <span class="muted" style="font-size:13px">自动解析成选择题 / 判断题 / 名词解释</span>
+    </div>
+    <input type="file" id="fileInput" accept=".md,.markdown,.txt,.text" multiple class="hidden" />
+    <div id="pasteArea" class="hidden">
+      <div class="field">
+        <label>题库名称（留空则自动识别文件名/标题）</label>
+        <input type="text" id="pasteName" placeholder="例如：2026 法规考点速记" />
+      </div>
+      <div class="field">
+        <label>把 OCR 软件（图片转 markdown）导出的 .md / 笔记文本粘贴到这里</label>
+        <textarea id="pasteText" rows="9" placeholder="支持规范格式与自由笔记，参见 README…"></textarea>
+      </div>
+      <div class="muted" style="font-size:13px;margin:-6px 0 12px">
+        💡 工作流：PC 用「图片转 markdown」OCR → 导出 .md → 传到手机 → 在这里粘贴 → 自动转题库
+      </div>
+      <button class="btn" id="pasteImport">解析并导入题库 ›</button>
+    </div>
+    <div id="bankList"></div>
+  </div>
+
+  <!-- 题库详情：三模式 + 目录 -->
+  <div class="view hidden" id="view-bank">
+    <div id="bankStats" class="bank-summary"></div>
+    <div class="mode-grid">
+      <div class="mode-card" data-mode="memorize">
+        <h3>🃏 背题模式</h3>
+        <p>卡片正反面翻转，按记忆曲线安排复习（忘记 / 模糊 / 记住），适合记忆巩固。</p>
+      </div>
+      <div class="mode-card" data-mode="practice">
+        <h3>✍️ 刷题模式</h3>
+        <p>逐题作答立即反馈 + 解析，自动收错题，选项乱序，适合练手感。</p>
+      </div>
+      <div class="mode-card" data-mode="exam">
+        <h3>⏱️ 考试模式</h3>
+        <p>限时组卷、交卷出分、按章节正确率分析（仅选择题/判断题计分）。</p>
+      </div>
+    </div>
+
+    <!-- 练习范围选择（点模式卡片后展开） -->
+    <div id="rangeBar" class="range-bar hidden">
+      <div class="range-head">练习范围 <span class="muted" id="rangeHint"></span></div>
+      <div class="seg" id="rangeSeg">
+        <button data-v="all" class="on">全部题目</button>
+        <button data-v="chapter">按章节选</button>
+      </div>
+      <div id="chapterPicker" class="chapter-picker hidden"></div>
+      <button class="btn" id="rangeStart">开始 ›</button>
+      <button class="btn ghost" id="rangeCancel">取消</button>
+    </div>
+
+    <!-- 目录树 -->
+    <div class="section-head">
+      <span>目录</span>
+      <span class="muted" id="outlineHint"></span>
+    </div>
+    <div id="outlineTree" class="outline"></div>
+
+    <!-- 题目列表 + 搜索 -->
+    <div class="section-head">
+      <span>题目</span>
+      <span class="muted" id="qlistHint"></span>
+    </div>
+    <input type="search" id="qSearch" class="search" placeholder="搜索题干 / 选项 / 答案 / 解析…" />
+    <div id="questionList" class="qlist"></div>
+
+    <div style="margin-top:18px" id="bankTools"></div>
+  </div>
+
+  <!-- 学习容器（背题/刷题/考试 共用） -->
+  <div class="view hidden" id="view-study"></div>
+
+  <div class="toast" id="toast"></div>
+
+  <script src="db.js"></script>
+  <script src="parser.js"></script>
+  <script src="scoring.js"></script>
+  <script src="app.js"></script>
+  <script>
+    if ('serviceWorker' in navigator) {
+      window.addEventListener('load', () => navigator.serviceWorker.register('sw.js').catch(() => {}));
+    }
+  </script>
+</body>
+</html>

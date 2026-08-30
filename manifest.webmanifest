@@ -1,0 +1,15 @@
+{
+  "name": "卡片题库 · 背题刷题考试",
+  "short_name": "卡片题库",
+  "description": "导入 md/txt 自动生成题库，卡片式背题/刷题/考试，离线可用",
+  "start_url": ".",
+  "scope": ".",
+  "display": "standalone",
+  "orientation": "portrait",
+  "background_color": "#f4f5f7",
+  "theme_color": "#4f46e5",
+  "icons": [
+    { "src": "icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any" },
+    { "src": "icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "maskable" }
+  ]
+}
