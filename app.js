@@ -812,11 +812,65 @@
     }
   }
 
+  // ---------- v8：切片导出供 AI 修正（规范 v1 第五/六节） ----------
+  const SLICE_PROMPT = [
+    '你是题库格式化工具。把下面原始文本转换为《题库导入排版规范 v1》格式，规则：',
+    '1. 结构：# 题库名 / ## 分区标题（单项选择题、多项选择题、简答题等）/ 题目块。',
+    '2. 题号：保留原卷连续编号；缺失或畸形（如 771、cm）按上下文纠正或重排。',
+    '3. 选项每个独立一行（A. ~E.）；原文挤在一行的要拆开。',
+    '4. 答案独立一行「答案：X」。文末集中答案区必须按题号拆回各题内联；某题确无答案写「答案：(缺)」。',
+    '5. 删除水印、页码、页眉页脚、广告词；题干与选项文字除明显错字外不得改写。',
+    '6. 只输出转换后的 md，不要任何解释。',
+    '',
+    '原始文本：'
+  ].join('\n');
+
+  function downloadText(name, content) {
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(new Blob([content], { type: 'text/markdown;charset=utf-8' }));
+    a.download = name;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    setTimeout(() => URL.revokeObjectURL(a.href), 3000);
+  }
+
+  function readAsText(file) {
+    return new Promise((res, rej) => {
+      const r = new FileReader();
+      r.onload = () => res(String(r.result || ''));
+      r.onerror = () => rej(r.error);
+      r.readAsText(file, 'utf-8');
+    });
+  }
+
+  async function handleSliceFiles(files) {
+    const list = Array.from(files);
+    let totalSlices = 0;
+    // 提示词模板先下，方便逐片粘贴时垫底
+    downloadText('00_AI修正提示词模板.txt', SLICE_PROMPT);
+    for (const f of list) {
+      const text = await readAsText(f);
+      const base = (f.name || '未命名').replace(/\.[^.]+$/, '');
+      const outs = QuizSlicer.sliceToFiles(text, base);
+      totalSlices += outs.length;
+      for (const o of outs) {
+        // 浏览器连下多文件需要间隔，否则会被拦截/丢
+        await new Promise(res => setTimeout(res, 350));
+        downloadText(o.name, o.content);
+      }
+      seq++;
+    }
+    toast(`已导出 ${list.length} 个文件 → ${totalSlices} 个切片`);
+  }
+
   function switchImport(v) {
     const isPaste = v === 'paste';
-    $('#dropZone').classList.toggle('hidden', isPaste);
-    $('#fileInput').classList.toggle('hidden', isPaste);
+    const isSlice = v === 'slice';
+    $('#dropZone').classList.toggle('hidden', isPaste || isSlice);
+    $('#fileInput').classList.toggle('hidden', isPaste || isSlice);
     $('#pasteArea').classList.toggle('hidden', !isPaste);
+    $('#sliceArea').classList.toggle('hidden', !isSlice);
     $('#importSeg').querySelectorAll('button').forEach(b => b.classList.toggle('on', b.dataset.v === v));
   }
 
@@ -833,6 +887,14 @@
     // 导入方式切换 / 粘贴导入
     $('#importSeg').querySelectorAll('button').forEach(b => b.onclick = () => switchImport(b.dataset.v));
     $('#pasteImport').onclick = handlePaste;
+    // v8：切片导出（可选入口，与直接导入互不影响）
+    const si = $('#sliceInput');
+    $('#sliceDrop').onclick = () => si.click();
+    si.onchange = () => { if (si.files.length) safe(handleSliceFiles(si.files), '切片导出失败'); si.value = ''; };
+    const sd = $('#sliceDrop');
+    ['dragover', 'dragenter'].forEach(ev => sd.addEventListener(ev, e => { e.preventDefault(); sd.classList.add('over'); }));
+    ['dragleave', 'drop'].forEach(ev => sd.addEventListener(ev, e => { e.preventDefault(); sd.classList.remove('over'); }));
+    sd.addEventListener('drop', e => { if (e.dataTransfer.files.length) safe(handleSliceFiles(e.dataTransfer.files), '切片导出失败'); });
     // 题库内搜索
     $('#qSearch').addEventListener('input', () => renderQuestionList($('#qSearch').value));
     // 范围选择

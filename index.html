@@ -27,12 +27,20 @@
     <div class="seg" id="importSeg" style="margin-bottom:14px">
       <button data-v="file" class="on">📂 选择文件</button>
       <button data-v="paste">📋 粘贴文本</button>
+      <button data-v="slice">✂️ 切片导出</button>
     </div>
     <div class="drop" id="dropZone">
       📥 点击选择或把 .md / .txt 文件拖到这里<br />
       <span class="muted" style="font-size:13px">自动解析成选择题 / 判断题 / 名词解释</span>
     </div>
     <input type="file" id="fileInput" accept=".md,.markdown,.txt,.text" multiple class="hidden" />
+    <div id="sliceArea" class="hidden">
+      <div class="drop" id="sliceDrop">
+        ✂️ 点击选择多个原始 .md / .txt（可拖入）<br />
+        <span class="muted" style="font-size:13px">原文逐字切片（≤6000 字/片、题块边界切）→ 下载后送 AI 按《题库导入排版规范》修正 → 再导入</span>
+      </div>
+      <input type="file" id="sliceInput" accept=".md,.markdown,.txt,.text" multiple class="hidden" />
+    </div>
     <div id="pasteArea" class="hidden">
       <div class="field">
         <label>题库名称（留空则自动识别文件名/标题）</label>
@@ -105,6 +113,7 @@
 
   <script src="db.js"></script>
   <script src="parser.js"></script>
+  <script src="slicer.js"></script>
   <script src="scoring.js"></script>
   <script src="app.js"></script>
   <script>

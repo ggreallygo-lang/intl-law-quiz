@@ -155,7 +155,10 @@
     // 不剥离的话「<!-- 源文件：xxx.pdf -->」会被当成名词解释入库）
     const src = String(text == null ? '' : text)
       .replace(/^\uFEFF/, '')
-      .replace(/<!--[\s\S]*?-->/g, '');
+      .replace(/<!--[\s\S]*?-->/g, '')
+      // v7：原件混入的推广词（实测「自考包过q29914638」「自考bao过qq22695192」），
+      // 会粘在题干中间，整段删除
+      .replace(/自考(?:包过|bao\s*过)\s*q{1,3}\d{5,10}/gi, '');
     // 自定义词库与内置词库取并集：加新词不会把旧词顶掉
     const words = (Array.isArray(opts.words) && opts.words.length)
       ? WM_EXTRA.concat(opts.words)
@@ -658,6 +661,10 @@
         continue;
       }
       const isStem = isQuestionStart(raw);
+      // v7：「请问：/问题：/问：」是案例题题干的组成部分，但含冒号会被 isTermLine
+      // 误切成独立的名词解释题（实测 201704/201710 产生无答案碎片题）。
+      // 直接并入当前块当续行，不参与任何切分判定。
+      if (/^\s*(?:请问|问题|问)[：:]/.test(raw)) { buffer.push(raw); continue; }
       // 遇到新题号，且当前块已经有题干 或 已经含答案 -> 上一题结束，切分
       if (buffer.length && isStem && (bufHasStem || hasAnswerInBuffer(buffer))) {
         flush();
@@ -763,7 +770,8 @@
     //    会被 buildTerm 当成名词解释，定义为答案正文。
     if (block.typeHint === 'essay' && options.length === 0) {
       const stem = lines.map((l, i) => (i === 0 ? stripNumber(l) : l))
-        .join(' ').replace(/\s+/g, ' ').trim();
+        .join(' ').replace(/\s+/g, ' ').trim()
+        .replace(RE_TYPE_TAG, '').trim();
       const answer = (ea && ea.text) ? trim(ea.text) : (ans || '');
       if (stem.length >= 2) {
         return {
@@ -791,7 +799,8 @@
       if (valid.length !== keys.length) keys = valid;
       const firstOpt = lines.findIndex(l => RE_OPTION.test(l));
       const stemLines = lines.slice(0, firstOpt < 0 ? lines.length : firstOpt);
-      const stem = stemLines.map((l, i) => i === 0 ? stripNumber(l) : l).join(' ').replace(/\s+/g, ' ').trim();
+      const stem = stemLines.map((l, i) => i === 0 ? stripNumber(l) : l).join(' ').replace(/\s+/g, ' ').trim()
+        .replace(RE_TYPE_TAG, '').trim();
       return {
         type: (keys.length > 1 || block.typeHint === 'multiple') ? 'multiple' : 'single',
         chapter: block.chapter,
@@ -802,17 +811,23 @@
       };
     }
 
-    // 1.5) 简答：块内有「答：」开头的行（编号题 + 答：内容）
-    //     注意 RE_ANSWER 只认「答案」，不认单个「答」，所以这里单独判定
-    const ansLineIdx = lines.findIndex(l => RE_ANS_LINE.test(l));
+    // 1.5) 简答：块内有「答：/答案：」开头的行（编号题 + 答案行）
+    //     v8：规范 v1 约定主观答案行用「答案：」，与单字「答：」一视同仁
+    const ansLineIdx = lines.findIndex(l => RE_ANS_LINE.test(l) || /^\s*答案\s*[:：]/.test(l));
     if (ansLineIdx > 0 && options.length === 0) {
-      const answer = lines.slice(ansLineIdx)
-        .map(l => trim(l.replace(RE_ANS_LINE, '$1')))
+      // 答案截到「解析：」行之前，否则解析行混入会让判断值护栏失效
+      let ansEnd = lines.length;
+      for (let i = ansLineIdx + 1; i < lines.length; i++) {
+        if (/^\s*解析\s*[:：]/.test(trim(lines[i]))) { ansEnd = i; break; }
+      }
+      const answer = lines.slice(ansLineIdx, ansEnd)
+        .map(l => trim(l.replace(RE_ANS_LINE, '$1')).replace(/^答案\s*[:：]\s*/, ''))
         .filter(Boolean).join(' ').replace(/\s+/g, ' ').trim();
       const stem = lines.slice(0, ansLineIdx).map(trim).filter(Boolean)
         .map((l, i) => (i === 0 ? stripNumber(l) : l))
         .join(' ').replace(/\s+/g, ' ').trim();
-      if (stem.length >= 2 && answer.length >= 2) {
+      // 护栏：答案是判断值（「答案：错误」）时留给判断题分支，不抢成简答
+      if (stem.length >= 2 && answer.length >= 2 && !isJudgeValue(answer)) {
         return { type: 'essay', chapter: block.chapter, stem: stem, answer: answer, explanation: expl || '' };
       }
     }
@@ -829,7 +844,8 @@
     if (ans != null && isJudgeValue(ans) && options.length === 0) {
       const ansIdx = lines.findIndex(l => RE_ANSWER.test(l));
       const stemLines = lines.slice(0, ansIdx < 0 ? lines.length : ansIdx);
-      const stem = stemLines.map((l, i) => i === 0 ? stripNumber(l) : l).join(' ').replace(/\s+/g, ' ').trim();
+      const stem = stemLines.map((l, i) => i === 0 ? stripNumber(l) : l).join(' ').replace(/\s+/g, ' ').trim()
+        .replace(RE_TYPE_TAG, '').trim();
       // 题干可能带了 对/错 在句末，去掉
       return {
         type: 'judge',
