@@ -141,6 +141,7 @@
     S.pendingMode = null;
     $('#title').textContent = bank.name;
     setBack('home');
+    renderBankSwitch(bank.id);
     $('#rangeBar').classList.add('hidden');
     await renderBankStats();
     renderOutlineTree();
@@ -153,6 +154,19 @@
       `<button class="btn secondary" id="exportBtn">⬇️ 导出此题库为 .md</button>`;
     $('#exportBtn').onclick = () => exportBank(bank, S.questions);
     showView('bank');
+  }
+
+  // v9：详情页顶部的题库切换条——别的题库一点就换，不用返回首页
+  async function renderBankSwitch(curId) {
+    const banks = await DB.listBanks();
+    const box = $('#bankSwitch');
+    if (!banks || banks.length < 2) { box.innerHTML = ''; return; }
+    box.innerHTML = banks.map(b =>
+      `<button class="bs-chip${b.id === curId ? ' on' : ''}" data-id="${esc(b.id)}">${esc(b.name)}</button>`
+    ).join('');
+    box.querySelectorAll('.bs-chip').forEach(c => {
+      c.onclick = () => { if (c.dataset.id !== curId) openBank(c.dataset.id); };
+    });
   }
 
   // 掌握度：练过的题里，答对比答错多、或 SM2 间隔已到 6 天以上算「已掌握」
@@ -895,6 +909,32 @@
     ['dragover', 'dragenter'].forEach(ev => sd.addEventListener(ev, e => { e.preventDefault(); sd.classList.add('over'); }));
     ['dragleave', 'drop'].forEach(ev => sd.addEventListener(ev, e => { e.preventDefault(); sd.classList.remove('over'); }));
     sd.addEventListener('drop', e => { if (e.dataTransfer.files.length) safe(handleSliceFiles(e.dataTransfer.files), '切片导出失败'); });
+    // v9：备份 / 恢复（跨设备同步）
+    $('#backupBtn').onclick = () => safe((async () => {
+      const dump = await DB.dumpAll();
+      const d = new Date();
+      const pad = n => String(n).padStart(2, '0');
+      downloadText(`题库备份_${d.getFullYear()}${pad(d.getMonth() + 1)}${pad(d.getDate())}.json`, JSON.stringify(dump));
+      toast('备份已导出；把该文件发到手机，在手机端点「恢复备份」');
+    })(), '导出备份失败');
+    $('#restoreBtn').onclick = () => $('#restoreInput').click();
+    $('#restoreInput').onchange = () => safe((async () => {
+      const f = $('#restoreInput').files[0];
+      $('#restoreInput').value = '';
+      if (!f) return;
+      if (!confirm('恢复备份会覆盖本设备上的题库与学习进度，继续？')) return;
+      const dump = JSON.parse(await readAsText(f));
+      await DB.restoreAll(dump);
+      toast('恢复成功');
+      renderHome();
+    })(), '恢复备份失败');
+    // v9：目录全部折叠 / 展开
+    $('#outlineFold').onclick = () => {
+      const nodes = Array.from($('#outlineTree').querySelectorAll('.ol-node'));
+      const anyOpen = nodes.some(n => !n.classList.contains('collapsed'));
+      nodes.forEach(n => n.classList.toggle('collapsed', anyOpen));
+      $('#outlineFold').textContent = anyOpen ? '全部展开' : '全部折叠';
+    };
     // 题库内搜索
     $('#qSearch').addEventListener('input', () => renderQuestionList($('#qSearch').value));
     // 范围选择

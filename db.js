@@ -336,12 +336,35 @@
     });
   }
 
+  // ---------- v9：整机备份 / 恢复（跨设备同步用） ----------
+  async function dumpAll() {
+    const banks = await reqP((await tx('banks', 'readonly')).getAll());
+    const questions = await reqP((await tx('questions', 'readonly')).getAll());
+    const progress = await reqP((await tx('progress', 'readonly')).getAll());
+    return { app: 'card-quiz', version: 1, exportedAt: Date.now(), banks: banks, questions: questions, progress: progress };
+  }
+
+  async function restoreAll(dump) {
+    if (!dump || dump.app !== 'card-quiz' || !Array.isArray(dump.banks) || !Array.isArray(dump.questions)) {
+      throw new Error('备份文件格式不对');
+    }
+    const db = await open();
+    const t = db.transaction(['banks', 'questions', 'progress'], 'readwrite');
+    const bs = t.objectStore('banks'), qs = t.objectStore('questions'), ps = t.objectStore('progress');
+    bs.clear(); qs.clear(); ps.clear();
+    dump.banks.forEach(b => bs.put(b));
+    dump.questions.forEach(q => qs.put(q));
+    (dump.progress || []).forEach(p => ps.put(p));
+    await txDone(t);
+  }
+
   return {
     open, saveBank, listBanks, getBank, deleteBank,
     addQuestions, listQuestions,
     getOutline, deriveOutlineFromQuestions, expandChapterPaths,
     countByChapterPath, applyCounts, chapterKey,
     getProgress, saveProgress, listProgress, bulkUpdateProgress,
+    dumpAll, restoreAll,
     setEventHandler, isQuotaError, uid
   };
 });

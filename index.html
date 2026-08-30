@@ -56,10 +56,16 @@
       <button class="btn" id="pasteImport">解析并导入题库 ›</button>
     </div>
     <div id="bankList"></div>
+    <div class="home-tools">
+      <button class="btn secondary" id="backupBtn">💾 导出备份</button>
+      <button class="btn secondary" id="restoreBtn">📥 恢复备份</button>
+      <input type="file" id="restoreInput" accept=".json,application/json" class="hidden" />
+    </div>
   </div>
 
   <!-- 题库详情：三模式 + 目录 -->
   <div class="view hidden" id="view-bank">
+    <div id="bankSwitch" class="bank-switch"></div>
     <div id="bankStats" class="bank-summary"></div>
     <div class="mode-grid">
       <div class="mode-card" data-mode="memorize">
@@ -92,6 +98,7 @@
     <div class="section-head">
       <span>目录</span>
       <span class="muted" id="outlineHint"></span>
+      <button class="btn ghost small" id="outlineFold">全部折叠</button>
     </div>
     <div id="outlineTree" class="outline"></div>
 

@@ -314,3 +314,14 @@ body {
 .ck-row input { flex: none; width: 16px; height: 16px; }
 .ck-row span:nth-of-type(1) { flex: 1; }
 .ck-row .muted { font-size: 12px; }
+
+/* v9：题库切换条 / 备份工具行 / 折叠按钮 / 放大目录箭头 */
+.bank-switch { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 10px; }
+.bs-chip { border: 1px solid var(--line); background: var(--card); color: var(--text);
+  border-radius: 999px; padding: 5px 12px; font-size: 13px; max-width: 46vw;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.bs-chip.on { background: var(--primary); border-color: var(--primary); color: #fff; }
+.home-tools { display: flex; gap: 8px; margin-top: 14px; }
+.btn.small { padding: 4px 10px; font-size: 12px; margin-left: auto; }
+.ol-toggle { width: 26px; height: 26px; font-size: 16px; flex: none;
+  display: inline-flex; align-items: center; justify-content: center; }
