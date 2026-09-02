@@ -36,6 +36,34 @@ body {
   background: var(--bg); color: var(--text);
   font-size: 16px; line-height: 1.55;
   max-width: 720px; margin: 0 auto;
+  overflow-x: hidden;
+}
+
+/* 淡入动画 */
+@keyframes fadeIn {
+  from { opacity: 0; transform: translateY(10px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+.fade-in { animation: fadeIn 0.3s ease-out forwards; }
+
+/* 空状态插画 */
+.empty-state {
+  text-align: center;
+  padding: 40px 20px;
+  color: var(--muted);
+}
+
+.empty-state .emoji {
+  font-size: 48px;
+  display: block;
+  margin-bottom: 12px;
+  animation: bounce 2s infinite;
+}
+
+@keyframes bounce {
+  0%, 100% { transform: translateY(0); }
+  50% { transform: translateY(-10px); }
 }
 /* 全局错误横幅：sticky 而非 fixed，避免盖住顶部栏 */
 .crashbar {
@@ -325,3 +353,97 @@ body {
 .btn.small { padding: 4px 10px; font-size: 12px; margin-left: auto; }
 .ol-toggle { width: 26px; height: 26px; font-size: 16px; flex: none;
   display: inline-flex; align-items: center; justify-content: center; }
+
+/* ========== F18v14 错题本批量操作 ========== */
+.wb-toolbar {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  margin: 10px 0;
+  padding: 10px;
+  background: var(--surface);
+  border-radius: 12px;
+}
+.wb-toolbar .cb-wb, .wb-toolbar #selectAllCheck {
+  width: auto;
+  height: auto;
+  cursor: pointer;
+}
+.wb-item {
+  position: relative;
+  padding: 12px 16px 12px 48px; /* 左侧为复选框留空 */
+  border-radius: 12px;
+  background: var(--surface);
+  margin-bottom: 10px;
+  box-shadow: 0 2px 8px rgba(0,0,0,.04);
+  transition: background .2s, box-shadow .2s;
+  overflow: hidden;
+}
+.wb-item:hover {
+  background: var(--bg);
+  box-shadow: 0 4px 12px rgba(0,0,0,.06);
+}
+.wb-check {
+  position: absolute;
+  left: 12px;
+  top: 50%;
+  transform: translateY(-50%);
+  z-index: 10;
+}
+.wb-check input[type="checkbox"] {
+  width: 18px;
+  height: 18px;
+  cursor: pointer;
+  accent-color: var(--primary);
+}
+.wb-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 8px;
+  position: relative;
+}
+.wb-badge {
+  font-size: 12px;
+  color: var(--muted);
+  background: var(--line);
+  padding: 3px 8px;
+  border-radius: 999px;
+}
+.wb-remove {
+  cursor: pointer;
+  font-size: 12px;
+  color: var(--muted);
+  border: none;
+  background: transparent;
+  padding: 4px 8px;
+  border-radius: 6px;
+  transition: background .2s, color .2s;
+}
+.wb-remove:hover {
+  background: var(--bad-bg);
+  color: var(--bad);
+}
+.wb-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 12px;
+  border: 1px solid var(--line);
+  background: var(--surface);
+  color: var(--text);
+  border-radius: 999px;
+  font-size: 13px;
+  cursor: pointer;
+  transition: background .2s, color .2s;
+}
+.wb-chip.on {
+  background: var(--primary);
+  color: #fff;
+  border-color: var(--primary);
+}
+.wb-actions {
+  display: flex;
+  gap: 10px;
+  margin: 14px 0;
+}
