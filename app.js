@@ -72,7 +72,7 @@
   function showView(name) {
     if (curView === 'study' && name !== 'study') cleanupStudy();
     curView = name;
-    ['home', 'bank', 'study'].forEach(v => $('#view-' + v).classList.toggle('hidden', v !== name));
+    ['home', 'bank', 'study', 'wrong'].forEach(v => $('#view-' + v).classList.toggle('hidden', v !== name));
   }
   function cleanupStudy() {
     if (exam && exam.timer) { clearInterval(exam.timer); exam.timer = null; }
@@ -103,6 +103,7 @@
   // ---------- 题库列表（首页） ----------
   async function renderHome() {
     const banks = await DB.listBanks();
+    safe(renderHomeStats(), '加载统计失败');   // 统计卡并行加载，不阻塞题库列表
     const list = $('#bankList');
     if (!banks.length) {
       list.innerHTML = '<div class="empty">还没有题库，导入一个 .md / .txt 开始吧 👆</div>';
@@ -125,6 +126,37 @@
     }
   }
 
+  // ---------- F2 统计面板 ----------
+  // 首页顶部卡：累计做题数 + 累计时长 + 连续打卡（用户铁律三件套）
+  async function renderHomeStats() {
+    const box = $('#homeStats'); if (!box) return;
+    const sess = (await DB.listSessions()) || [];
+    const t = DB.aggTotals(sess);
+    const streak = DB.streakDays(sess);
+    const h = Math.floor(t.ms / 3600000);
+    const m = Math.round((t.ms % 3600000) / 60000);
+    const dur = h > 0 ? `${h} 小时 ${m} 分` : (m > 0 ? `${m} 分钟` : `${Math.round(t.ms / 1000)} 秒`);
+    box.innerHTML =
+      `<div class="hs-main">📊 累计做题 <b>${t.count}</b> 题 · 累计 ${dur} · 连续打卡 <b>${streak}</b> 天</div>` +
+      (t.count ? '' : `<div class="hs-hint">做一次题就开始计数（刷题 / 背题 / 考试都算）</div>`);
+    box.classList.remove('hidden');
+  }
+
+  // 详情页：近 14 天每日做题量，纯 CSS 条形（零依赖，不引图表库）
+  async function renderBankChart() {
+    const box = $('#bankChart'); if (!box) return;
+    const sess = (await DB.listSessions(S.bank.id)) || [];
+    const days = DB.dailyCounts(sess, 14);
+    let max = 1;
+    days.forEach(d => { if (d.count > max) max = d.count; });
+    box.innerHTML =
+      `<div class="bc-title">近 14 天每日做题量<span class="muted">（共 ${days.reduce((a, d) => a + d.count, 0)} 题）</span></div>` +
+      `<div class="bc-row">` + days.map(d =>
+        `<div class="bc-col" title="${d.key}：${d.count} 题"><span class="bc-bar" style="height:${Math.round(d.count / max * 56)}px"></span></div>`
+      ).join('') + `</div>`;
+    box.classList.remove('hidden');
+  }
+
   async function confirmDelete(id, name) {
     if (!confirm(`确定删除题库「${name}」？此操作不可恢复。`)) return;
     await DB.deleteBank(id); toast('已删除'); renderHome();
@@ -144,6 +176,9 @@
     renderBankSwitch(bank.id);
     $('#rangeBar').classList.add('hidden');
     await renderBankStats();
+    safe(renderBankChart(), '加载每日统计失败');
+    await safe(refreshWrongCount(), '加载错题数失败');
+    safe(refreshWeakEntry(), '加载弱项统计失败');
     renderOutlineTree();
     renderQuestionList('');
     // 模式卡片 -> 先选范围
@@ -271,6 +306,18 @@
       `</div></div>`;
   }
 
+  // 展开/收起答案：题目列表与错题本列表共用
+  function bindReveal(box) {
+    box.querySelectorAll('.qcard-reveal').forEach(b => {
+      b.onclick = () => {
+        const card = b.closest('.qcard');
+        const ans = card.querySelector('.qcard-answer');
+        ans.classList.toggle('hidden');
+        b.textContent = ans.classList.contains('hidden') ? '显示答案' : '收起答案';
+      };
+    });
+  }
+
   function renderQuestionList(kw) {
     const box = $('#questionList');
     let list = S.questions;
@@ -285,14 +332,164 @@
     $('#qlistHint').textContent = filtered ? `筛出 ${list.length} 题` : `共 ${list.length} 题`;
     if (!list.length) { box.innerHTML = '<div class="empty">没有匹配的题目</div>'; return; }
     box.innerHTML = list.map(questionCardHtml).join('');
-    box.querySelectorAll('.qcard-reveal').forEach(b => {
+    bindReveal(box);
+  }
+
+  // ---------- F1：跨会话错题本 ----------
+  // wb = 当前错题本状态。progs 一次读出来后本地筛选，切筛选条件不再打库。
+  let wb = null;
+
+  async function wrongItems(opts) {
+    const progs = await DB.listProgress(S.bank.id);
+    const qmap = {};
+    S.questions.forEach(q => { qmap[q.id] = q; });
+    return DB.pickWrong(progs, Object.assign({ questionMap: qmap }, opts || {}));
+  }
+
+  // 题库详情页入口角标：不点进去也能一眼看到攒了多少错题
+  async function refreshWrongCount() {
+    const el = $('#wrongEntryCount');
+    if (!el) return;
+    const items = await wrongItems();
+    el.textContent = items.length;
+    const hint = $('#wrongEntryHint');
+    if (hint) hint.textContent = items.length ? '' : '（还没有错题）';
+    return items.length;
+  }
+
+  async function openWrongBook() {
+    const progs = await DB.listProgress(S.bank.id);
+    const qmap = {};
+    S.questions.forEach(q => { qmap[q.id] = q; });
+    wb = { progs: progs, qmap: qmap, type: null, chapter: null };
+    setBack('bank', '‹ 题库');
+    $('#title').textContent = '错题本';
+    renderWrongBook();
+    showView('wrong');
+  }
+
+  function wbFiltered() {
+    return DB.pickWrong(wb.progs, {
+      questionMap: wb.qmap,
+      types: wb.type ? [wb.type] : null,
+      chapter: wb.chapter
+    });
+  }
+
+  function wbChips(kind, pairs, cur) {
+    // pairs: [[值, 显示名, 数量], ...]，值 '' 表示「全部」
+    return `<div class="wb-filters">` + pairs.map(p =>
+      `<button class="wb-chip${(cur || '') === p[0] ? ' on' : ''}" data-kind="${kind}" data-v="${esc(p[0])}">${esc(p[1])}${p[2] != null ? ' ' + p[2] : ''}</button>`
+    ).join('') + `</div>`;
+  }
+
+  function renderWrongBook() {
+    const view = $('#view-wrong');
+    const all = DB.pickWrong(wb.progs, { questionMap: wb.qmap });
+
+    // 筛选项从「实际有错题的范围」里长出来，避免列出一堆空章节
+    const typeCnt = {}, chapCnt = {};
+    all.forEach(it => {
+      const q = it.question; if (!q) return;
+      typeCnt[q.type] = (typeCnt[q.type] || 0) + 1;
+      const c = DB.topChapter(q);
+      chapCnt[c] = (chapCnt[c] || 0) + 1;
+    });
+    // 当前筛选组里的错题被移光时自动复位：否则 chips 不再渲染，用户会卡在空列表且无法取消筛选
+    if (wb.type && !typeCnt[wb.type]) wb.type = null;
+    if (wb.chapter && !chapCnt[wb.chapter]) wb.chapter = null;
+    const items = wbFiltered();
+    const typePairs = [['', '全部题型', all.length]].concat(
+      Object.keys(typeCnt).map(t => [t, TYPE_LABEL[t] || t, typeCnt[t]]));
+    const chapPairs = [['', '全部章节', all.length]].concat(
+      Object.keys(chapCnt).map(c => [c, c, chapCnt[c]]));
+
+    const sumWrong = items.reduce((n, it) => n + it.wrong, 0);
+    let html = `<div class="bank-summary">` +
+      `<div class="sum-main"><b>${items.length}</b> 道错题 · 累计错 ${sumWrong} 次</div>` +
+      `<div class="sum-sub">按「错误次数 → 最近错误时间」排序；重刷答对不会自动移出，可单题点「移除」</div>` +
+      `</div>`;
+    if (typePairs.length > 2) html += wbChips('type', typePairs, wb.type);
+    if (chapPairs.length > 2) html += wbChips('chapter', chapPairs, wb.chapter);
+    html += `<div class="wb-actions">` +
+      `<button class="btn" id="wbPractice"${items.length ? '' : ' disabled'}>✍️ 刷错题</button>` +
+      `<button class="btn secondary" id="wbMemorize"${items.length ? '' : ' disabled'}>🃏 背错题</button>` +
+      `</div>`;
+    html += items.length
+      ? `<div class="qlist">` + items.map(it =>
+        `<div class="wb-item" data-qid="${esc(it.qid)}">` +
+        `<div class="wb-head"><span class="wb-badge">错 ${it.wrong} 次${it.right ? ' · 对 ' + it.right + ' 次' : ''}</span>` +
+        `<button class="wb-remove" type="button">移除</button></div>` +
+        questionCardHtml(it.question) + `</div>`).join('') + `</div>`
+      : `<div class="empty">${all.length ? '这个筛选条件下没有错题' : '还没有错题，去刷题或考试攒一攒 👆'}</div>`;
+    view.innerHTML = html;
+
+    view.querySelectorAll('.wb-chip').forEach(b => {
       b.onclick = () => {
-        const card = b.closest('.qcard');
-        const ans = card.querySelector('.qcard-answer');
-        ans.classList.toggle('hidden');
-        b.textContent = ans.classList.contains('hidden') ? '显示答案' : '收起答案';
+        const v = b.dataset.v || null;
+        if (b.dataset.kind === 'type') wb.type = (wb.type === v) ? null : v;
+        else wb.chapter = (wb.chapter === v) ? null : v;
+        renderWrongBook();
       };
     });
+    bindReveal(view);
+    view.querySelectorAll('.wb-remove').forEach(b => {
+      b.onclick = () => safe(removeWrong(b.closest('.wb-item').dataset.qid), '移除失败');
+    });
+    if (items.length) {
+      const list = items.map(it => it.question);
+      $('#wbPractice').onclick = () => startMode('practice', list, { title: '刷错题' });
+      // 背错题不做 SM2 due 过滤：错题就是要全部过一遍
+      $('#wbMemorize').onclick = () => startMode('memorize', list, { title: '背错题', all: true });
+    }
+  }
+
+  async function removeWrong(qid) {
+    const ok = await DB.setWrongDismissed(qid, S.bank.id, true);
+    if (!ok) { toast('这道题的进度记录不在了'); return; }
+    toast('已移出错题本');
+    wb.progs = await DB.listProgress(S.bank.id);   // 重读进度，但保留当前筛选条件
+    renderWrongBook();
+    await safe(refreshWrongCount(), '刷新错题数失败');
+  }
+
+  // ---------- F18：弱项专项包 ----------
+  // 组卷规则全在 DB.weakPack（纯函数、单测覆盖）；这里只负责取进度、说人话、进刷题流程。
+  const WEAK_TOTAL = 20;
+
+  // 详情页入口：不点进去也能看到最弱那章有多弱
+  async function refreshWeakEntry() {
+    const acc = $('#weakEntryAcc'), hint = $('#weakEntryHint');
+    if (!acc || !hint || !S.bank) return null;
+    if (!S.questions.length) { acc.textContent = ''; hint.textContent = '（题库是空的）'; return null; }
+    const progs = await DB.listProgress(S.bank.id);
+    const pack = DB.weakPack(S.questions, progs, { total: WEAK_TOTAL });
+    if (pack.mode === 'weak') {
+      const w = pack.weak[0];
+      acc.textContent = Math.round(w.acc * 100) + '%';
+      hint.textContent = w.chapter + ' 最弱' + (pack.weak.length > 1 ? ' · 共 ' + pack.weak.length + ' 章' : '');
+    } else {
+      acc.textContent = '';
+      // 同样降级成随机包，但「没练过」和「练了没弱项」要说清楚，否则用户以为按钮坏了
+      hint.textContent = pack.attempts ? '（暂无明显弱项）' : '（还没有练习记录）';
+    }
+    return pack;
+  }
+
+  async function startWeakPack() {
+    if (!S.bank) return;
+    if (!S.questions.length) { toast('这个题库还没有题目'); return; }
+    const progs = await DB.listProgress(S.bank.id);
+    const pack = DB.weakPack(S.questions, progs, { total: WEAK_TOTAL });
+    if (!pack.list.length) { toast('组不出题：题库里没有可练的题目'); return; }
+    if (pack.mode === 'weak') {
+      toast(`弱项专项包 ${pack.list.length} 题 · 弱章 ${pack.fromWeak} / 错题 ${pack.fromWrong} / 随机 ${pack.fromFill}`);
+    } else if (pack.attempts) {
+      toast(`暂无明显弱项，随机组了 ${pack.list.length} 题`);
+    } else {
+      toast(`还没有练习记录，先随机组了 ${pack.list.length} 题`);
+    }
+    startMode('practice', pack.list, { title: '弱项专项包' });
   }
 
   function exportBank(bank, qs) {
@@ -331,15 +528,17 @@
 
   // ---------- 背题模式 ----------
   let mem = null;
-  async function startMemorize() {
+  async function startMemorize(opts) {
+    opts = opts || {};
     const progs = await DB.listProgress(S.bank.id);
     const map = {}; progs.forEach(p => map[p.qid] = p);
     const now = Date.now();
-    let due = S.pool.filter(q => !map[q.id] || map[q.id].due <= now);
+    // opts.all：错题本进来时不按记忆曲线过滤，错的全部过一遍
+    let due = opts.all ? S.pool.slice() : S.pool.filter(q => !map[q.id] || map[q.id].due <= now);
     if (!due.length) due = S.pool.slice(); // 全部复习完 -> 全部过一遍
     mem = { list: shuffle(due), i: 0, map };
     setBack('bank', '‹ 题库');
-    $('#title').textContent = '背题';
+    $('#title').textContent = opts.title || '背题';
     renderMemorize();
   }
   function renderMemorize() {
@@ -382,6 +581,7 @@
       $('#flipHint').classList.add('hidden');
       $('#rateArea').classList.remove('hidden');
     };
+    mem.renderedAt = Date.now();   // F2：展示→自评的耗时起点
     $('#flipBtn').onclick = flip;
     $('#card').onclick = flip;
     $('#rateArea').querySelectorAll('button').forEach(b => {
@@ -390,6 +590,7 @@
         p = sm2(p, +b.dataset.q);
         mem.map[q.id] = p;
         await DB.saveProgress(p);
+        safe(DB.logSessions([{ bankId: S.bank.id, qid: q.id, mode: 'memorize', right: (+b.dataset.q) >= 3, ms: Date.now() - (mem.renderedAt || Date.now()) }]), '记录作答流水失败');
         mem.i++; renderMemorize();
       };
     });
@@ -397,10 +598,11 @@
 
   // ---------- 刷题模式 ----------
   let prac = null;
-  async function startPractice() {
-    prac = { list: shuffle(S.pool), i: 0, wrong: [], correct: 0, wrongIds: [] };
+  async function startPractice(opts) {
+    opts = opts || {};
+    prac = { list: shuffle(S.pool), i: 0, wrong: [], correct: 0, wrongIds: [], title: opts.title || '刷题' };
     setBack('bank', '‹ 题库');
-    $('#title').textContent = '刷题';
+    $('#title').textContent = prac.title;
     renderPractice();
   }
   function renderPractice() {
@@ -408,6 +610,7 @@
     if (prac.i >= prac.list.length) return renderPracticeResult();
     const q = prac.list[prac.i];
     const total = prac.list.length;
+    prac.renderedAt = Date.now();   // F2：展示→作答的耗时起点
     let body = '';
     // 自评题：名词解释 / 简答 / 答案过长的填空 —— 看答案后自己判断会/不会
     if (Scoring.isSelfAssess(q)) {
@@ -498,6 +701,7 @@
     }
     fb.innerHTML = html;
     if (right) prac.correct++; else prac.wrongIds.push(q.id);
+    safe(DB.logSessions([{ bankId: S.bank.id, qid: q.id, mode: 'practice', right: right, ms: Date.now() - (prac.renderedAt || Date.now()) }]), '记录作答流水失败');
 
     // 先让用户可以继续，再写库 —— 存储失败绝不能把人卡死在这一题
     $('#nextWrap').classList.remove('hidden');
@@ -506,8 +710,13 @@
     await safe((async () => {
       let p = await DB.getProgress(q.id) || { qid: q.id, bankId: S.bank.id, ease: 2.5, interval: 0, reps: 0, due: 0, lapses: 0 };
       p.practice = p.practice || { correct: 0, wrong: 0 };
-      if (right) p.practice.correct++; else p.practice.wrong++;
-      if (!right) p.lapses = (p.lapses || 0) + 1;
+      if (right) p.practice.correct++;
+      else {
+        p.practice.wrong++;
+        p.lapses = (p.lapses || 0) + 1;
+        p.lastWrong = Date.now();       // 错题本排序用
+        p.wrongDismissed = false;       // 曾被移除的再答错要收回来
+      }
       p.due = Date.now(); // 刷题后立即可在背题里复习
       await DB.saveProgress(p);
     })(), '保存进度失败');
@@ -526,10 +735,11 @@
        <button class="btn ghost" id="backBank">返回题库</button>`;
     if (prac.wrongIds.length) $('#reviewWrong').onclick = async () => {
       const map = {}; S.questions.forEach(q => map[q.id] = q);
-      prac = { list: shuffle(prac.wrongIds.map(id => map[id]).filter(Boolean)), i: 0, wrong: [], correct: 0, wrongIds: [] };
+      const title = prac.title;
+      prac = { list: shuffle(prac.wrongIds.map(id => map[id]).filter(Boolean)), i: 0, wrong: [], correct: 0, wrongIds: [], title: title };
       renderPractice();
     };
-    $('#redoPrac').onclick = () => startPractice();
+    $('#redoPrac').onclick = () => startPractice({ title: prac.title });
     $('#backBank').onclick = () => openBank(S.bank.id);
   }
 
@@ -567,11 +777,18 @@
     $('#startExam').onclick = () => {
       let list = gradable;
       if (settings.n !== 'all') { const k = Math.min(+settings.n, list.length); list = shuffle(list).slice(0, k); }
-      exam = { list, i: 0, min: Math.max(0, +$('#examMin').value || 0), shuffleOpt: settings.shuffleOpt, answers: {}, endAt: 0, timer: null };
+      exam = { list, i: 0, min: Math.max(0, +$('#examMin').value || 0), shuffleOpt: settings.shuffleOpt, answers: {}, endAt: 0, timer: null, msPer: {}, enterTs: 0 };
       if (exam.min > 0) exam.endAt = Date.now() + exam.min * 60000;
       setBack('bank', '‹ 题库'); $('#title').textContent = '考试中';
       renderExam();
     };
+  }
+  // F2：把「当前题停留时长」累加进 msPer；反复切回同一题会累加，符合每题真实耗时口径
+  function accExamMs() {
+    if (!exam || !exam.enterTs) return;
+    const q = exam.list[exam.i];
+    if (q) exam.msPer[q.id] = (exam.msPer[q.id] || 0) + (Date.now() - exam.enterTs);
+    exam.enterTs = 0;
   }
   function renderExam() {
     const view = $('#view-study'); showView('study');
@@ -627,11 +844,12 @@
       inp.onchange = save;
       inp.onkeydown = (e) => { if (e.key === 'Enter') { save(); const n = $('#nextExamBtn'); if (n) n.click(); } };
     }
-    $('#prevBtn').onclick = () => { if (exam.i > 0) { exam.i--; renderExam(); } };
+    $('#prevBtn').onclick = () => { if (exam.i > 0) { accExamMs(); exam.i--; renderExam(); } };
     $('#nextExamBtn').onclick = () => {
       if (exam.i + 1 >= total) { if (confirm('确定交卷？')) submitExam(); }
-      else { exam.i++; renderExam(); }
+      else { accExamMs(); exam.i++; renderExam(); }
     };
+    exam.enterTs = Date.now();
   }
   function toggle(arr, v) { return arr.includes(v) ? arr.filter(x => x !== v) : arr.concat(v); }
   function renderExamMulti(q) {
@@ -646,9 +864,11 @@
   async function submitExam() {
     if (!exam) return;                     // 已经离开考试页（定时器晚到一步）时直接忽略
     if (exam.timer) { clearInterval(exam.timer); exam.timer = null; }
+    accExamMs();                           // 结算最后一题（或超时那一刻）的停留时长
     let correct = 0; const wrongList = [];
     const byChapter = {};
     const updates = [];                 // 待写进度，稍后一次性批量提交
+    const sessList = [];                // F2：待写作答流水，结果渲染完再入库
     exam.list.forEach(q => {
       const a = exam.answers[q.id];
       const ok = a ? Scoring.isRight(q, a.value) : false;
@@ -656,6 +876,7 @@
       c.total++; if (ok) { correct++; c.correct++; }
       if (!ok) wrongList.push({ q, user: a });
       updates.push({ qid: q.id, ok: ok });
+      sessList.push({ bankId: S.bank.id, qid: q.id, mode: 'exam', right: ok, ms: exam.msPer[q.id] || 0 });
     });
     const total = exam.list.length;
     const score = total ? Math.round(correct / total * 100) : 0;
@@ -684,6 +905,7 @@
 
     // 结果已经渲染出来了再写库，存储失败不会挡住看成绩；失败只提示
     await safe(DB.bulkUpdateProgress(S.bank.id, updates, 'exam'), '保存成绩失败');
+    safe(DB.logSessions(sessList), '记录作答流水失败');
   }
 
   // ---------- 练习范围选择 ----------
@@ -746,10 +968,11 @@
   }
 
   // ---------- 模式入口 ----------
-  function startMode(mode, list) {
+  // opts：{ title, all } —— 错题本用 title 改标题、用 all 让背题跳过记忆曲线过滤
+  function startMode(mode, list, opts) {
     S.pool = (list && list.length) ? list : S.questions.slice();
-    if (mode === 'memorize') startMemorize();
-    else if (mode === 'practice') startPractice();
+    if (mode === 'memorize') startMemorize(opts);
+    else if (mode === 'practice') startPractice(opts);
     else if (mode === 'exam') startExamSetup();
   }
 
@@ -828,13 +1051,15 @@
 
   // ---------- v8：切片导出供 AI 修正（规范 v1 第五/六节） ----------
   const SLICE_PROMPT = [
-    '你是题库格式化工具。把下面原始文本转换为《题库导入排版规范 v1》格式，规则：',
-    '1. 结构：# 题库名 / ## 分区标题（单项选择题、多项选择题、简答题等）/ 题目块。',
-    '2. 题号：保留原卷连续编号；缺失或畸形（如 771、cm）按上下文纠正或重排。',
-    '3. 选项每个独立一行（A. ~E.）；原文挤在一行的要拆开。',
-    '4. 答案独立一行「答案：X」。文末集中答案区必须按题号拆回各题内联；某题确无答案写「答案：(缺)」。',
-    '5. 删除水印、页码、页眉页脚、广告词；题干与选项文字除明显错字外不得改写。',
-    '6. 只输出转换后的 md，不要任何解释。',
+    '你是题库格式化工具。把下面原始文本转换为《题库导入排版规范 v1》格式，并遵守《数据清洗规则 v1》，要点：',
+    '1. 结构：# 题库名 / ## 分区标题（单项选择题、多项选择题、简答题等）/ 题目块；题号全卷连续。',
+    '2. 删除：公众号水印（【公众号：…】等）、行内广告词（自考包过+qq号）、页眉页脚页码、绝密★启用前、注意事项段、<!--注释-->。',
+    '3. 题号纠错：J.→1.、771→37 这类按上下文修；修不了的（如 30.6、cm 7. D 属原件自带损坏）该题写「答案：(缺)」，绝不猜。',
+    '4. 选项每个独立一行（A. ~E.），挤一行的要拆；冒号式 A: 统一为 A. 。',
+    '5. 文末集中答案区必须按题号拆回各题内联「答案：X」；容忍分隔符混用（1. B 2:A 3. D、12A、31ABCDE）；多选连写 ABD。',
+    '6. 【单选题】等方括号标签决定题型并从题干删除；案例题的「问题：/请问：」与(1)(2)小问并入题干，不拆独立题。',
+    '7. 主观题答案整段保留（含(2分)采分点）。题干与选项除明显错字外不得改写。',
+    '8. 只输出转换后的 md，不要任何解释。',
     '',
     '原始文本：'
   ].join('\n');
@@ -934,6 +1159,16 @@
       const anyOpen = nodes.some(n => !n.classList.contains('collapsed'));
       nodes.forEach(n => n.classList.toggle('collapsed', anyOpen));
       $('#outlineFold').textContent = anyOpen ? '全部展开' : '全部折叠';
+    };
+    // F1：错题本入口
+    $('#wrongEntry').onclick = () => {
+      if (!S.bank) return;
+      safe(openWrongBook(), '打开错题本失败');
+    };
+    // F18：弱项专项包入口（一键组卷进刷题）
+    $('#weakEntry').onclick = () => {
+      if (!S.bank) return;
+      safe(startWeakPack(), '组弱项专项包失败');
     };
     // 题库内搜索
     $('#qSearch').addEventListener('input', () => renderQuestionList($('#qSearch').value));

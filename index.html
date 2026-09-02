@@ -24,6 +24,8 @@
 
   <!-- 首页：题库列表 + 导入 -->
   <div class="view" id="view-home">
+    <!-- F2：全站累计统计卡（题数/时长/连续打卡），由 renderHomeStats 填充 -->
+    <div id="homeStats" class="home-stats hidden"></div>
     <div class="seg" id="importSeg" style="margin-bottom:14px">
       <button data-v="file" class="on">📂 选择文件</button>
       <button data-v="paste">📋 粘贴文本</button>
@@ -67,6 +69,21 @@
   <div class="view hidden" id="view-bank">
     <div id="bankSwitch" class="bank-switch"></div>
     <div id="bankStats" class="bank-summary"></div>
+    <!-- F2：本题库近 14 天每日做题量，由 renderBankChart 填充 -->
+    <div id="bankChart" class="bank-chart hidden"></div>
+
+    <!-- F1：错题本入口（跨会话，数据来自 progress 的累计答错次数） -->
+    <button class="wb-entry" id="wrongEntry" type="button">
+      <span>🔥 错题本</span>
+      <span class="wb-entry-right"><b id="wrongEntryCount">0</b><span class="muted" id="wrongEntryHint"></span></span>
+    </button>
+
+    <!-- F18：弱项专项包（弱章 60% + 错题 40% 组卷，一键进刷题；hint 由 refreshWeakEntry 填充） -->
+    <button class="wb-entry wp-entry" id="weakEntry" type="button">
+      <span>🎯 弱项专项包</span>
+      <span class="wb-entry-right"><b id="weakEntryAcc"></b><span class="muted" id="weakEntryHint">算一算…</span></span>
+    </button>
+
     <div class="mode-grid">
       <div class="mode-card" data-mode="memorize">
         <h3>🃏 背题模式</h3>
@@ -115,6 +132,9 @@
 
   <!-- 学习容器（背题/刷题/考试 共用） -->
   <div class="view hidden" id="view-study"></div>
+
+  <!-- F1：错题本（内容全由 app.js 渲染） -->
+  <div class="view hidden" id="view-wrong"></div>
 
   <div class="toast" id="toast"></div>
 

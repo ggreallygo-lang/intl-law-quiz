@@ -8,7 +8,7 @@
  *   2. 只缓存同源资源，且限制到 SHELL 白名单，避免缓存无限增长。
  *   3. 缓存前缀化：换版本时按前缀清理旧缓存，不再依赖精确名字匹配。
  */
-const CACHE = 'card-quiz-v10';
+const CACHE = 'card-quiz-v13';   // v13：F18 弱项专项包（弱章 60% + 错题 40% 一键组卷）
 const PREFIX = 'card-quiz-';
 const SHELL = [
   './', './index.html', './styles.css',
