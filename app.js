@@ -2,10 +2,17 @@
 (function () {
   'use strict';
   const $ = (s) => document.querySelector(s);
+  // v22：iOS Safari 里元素要有 touchstart 监听 :active 才生效——全局挂一个空的，
+  // 所有按钮的按压反馈在 iPhone 上就都有了（安卓本来就有，不受影响）
+  document.addEventListener('touchstart', function () {}, { passive: true });
+  // v22：首次手势预热音频引擎（iOS 自动播放策略），之后程序触发的音（考试告警）才出得了声
+  document.addEventListener('pointerdown', function () { if (window.SFX) SFX.warm(); }, { once: true, passive: true });
   const TYPE_LABEL = {
     single: '单选题', multiple: '多选题', judge: '判断题',
     term: '名词解释', fill: '填空题', essay: '简答题'
   };
+  // v21：模式名（模式卡片选中态 / 练习范围条 / 开始按钮共用）
+  const MODE_LABEL = { memorize: '🃏 背题', practice: '✍️ 刷题', exam: '⏱️ 考试' };
 
   // pool = 当前练习范围内的题目（全库或按章节筛出的子集）
   const S = { bank: null, questions: [], pool: [], outline: [], selectedChapter: null, back: 'home', pendingMode: null, cleaned: null };
@@ -13,6 +20,22 @@
   // ---------- 兼容性兜底 ----------
   // padStart 是 ES2017，老安卓 WebView（Chrome < 57）没有；这里自带一份，不依赖原型方法
   function pad2(n) { n = String(n); return n.length >= 2 ? n : '0' + n; }
+  // v21：用时格式化 mm:ss（满 1 小时 h:mm:ss）
+  function fmtElapsed(ms) {
+    const s = Math.max(0, Math.floor((ms || 0) / 1000));
+    const h = Math.floor(s / 3600), m = Math.floor((s % 3600) / 60), ss = s % 60;
+    return h > 0 ? h + ':' + pad2(m) + ':' + pad2(ss) : pad2(m) + ':' + pad2(ss);
+  }
+  // v21：模式计时器统一管理——离开学习页 / 结束 / 重开都要停，否则 interval 泄漏
+  function stopTimer(h) { if (h && h.timer) { clearInterval(h.timer); h.timer = null; } }
+  function startTimerChip(holder) {
+    // holder: prac / mem；每秒刷新 #mtTimer（元素随题目重渲重建，按 id 找）
+    if (!holder || holder.timer) return;
+    holder.timer = setInterval(() => {
+      const el = $('#mtTimer');
+      if (el && holder.startAt) el.textContent = '⏱ ' + fmtElapsed(Date.now() - holder.startAt);
+    }, 1000);
+  }
 
   // ---------- 全局错误兜底 ----------
   // 目标：任何未捕获异常都不许变成「白屏且无任何提示」。
@@ -75,7 +98,7 @@
     ['home', 'bank', 'study', 'wrong'].forEach(v => $('#view-' + v).classList.toggle('hidden', v !== name));
   }
   function cleanupStudy() {
-    if (exam && exam.timer) { clearInterval(exam.timer); exam.timer = null; }
+    stopTimer(exam); stopTimer(prac); stopTimer(mem);   // v21：三个模式的计时器统一停
   }
   function setBack(target, label) {
     S.back = target;
@@ -151,8 +174,9 @@
     days.forEach(d => { if (d.count > max) max = d.count; });
     box.innerHTML =
       `<div class="bc-title">近 14 天每日做题量<span class="muted">（共 ${days.reduce((a, d) => a + d.count, 0)} 题）</span></div>` +
-      `<div class="bc-row">` + days.map(d =>
-        `<div class="bc-col" title="${d.key}：${d.count} 题"><span class="bc-bar" style="height:${Math.round(d.count / max * 56)}px"></span></div>`
+      // v14：--i 驱动柱子从底部依次长起（barGrow 动画）
+      `<div class="bc-row">` + days.map((d, i) =>
+        `<div class="bc-col" title="${d.key}：${d.count} 题"><span class="bc-bar" style="--i:${i};height:${Math.round(d.count / max * 56)}px"></span></div>`
       ).join('') + `</div>`;
     box.classList.remove('hidden');
   }
@@ -175,6 +199,7 @@
     setBack('home');
     renderBankSwitch(bank.id);
     $('#rangeBar').classList.add('hidden');
+    clearModeSel();
     await renderBankStats();
     safe(renderBankChart(), '加载每日统计失败');
     await safe(refreshWrongCount(), '加载错题数失败');
@@ -285,7 +310,9 @@
   // 委托给 scoring.js：q.answer 可能是数组 / 字符串 / undefined，不能直接用 .map
   function answerText(q) { return Scoring.answerText(q); }
 
-  function questionCardHtml(q) {
+  // v14：i 由 Array#map 自动传入（未传则默认 0），用于卡片错峰入场，最多延后 12 张避免尾部等太久
+  function questionCardHtml(q, i) {
+    const stagger = ` style="--i:${Math.min(i || 0, 12)}"`;
     const path = (q.chapterPath && q.chapterPath.length) ? q.chapterPath.join(' › ') : (q.chapter || '未分组');
     let body = '';
     if (q.type === 'term') {
@@ -296,7 +323,7 @@
         ? `<div class="qcard-opts"><span>对</span><span>错</span></div>`
         : `<div class="qcard-opts">${(q.options || []).map(o => `<span>${o.key}. ${esc(o.text)}</span>`).join('')}</div>`;
     }
-    return `<div class="qcard">` +
+    return `<div class="qcard"${stagger}>` +
       `<div class="qcard-top"><span class="qtag">${TYPE_LABEL[q.type] || q.type}</span><span class="qcard-path">${esc(path)}</span></div>` +
       body +
       `<button class="qcard-reveal">显示答案</button>` +
@@ -464,14 +491,20 @@
     if (!S.questions.length) { acc.textContent = ''; hint.textContent = '（题库是空的）'; return null; }
     const progs = await DB.listProgress(S.bank.id);
     const pack = DB.weakPack(S.questions, progs, { total: WEAK_TOTAL });
-    if (pack.mode === 'weak') {
+    // ⚠️ mode==='weak' 只代表「组出了弱章题或错题」，不代表 weak 数组非空：
+    // weakChapters 要求该章作答 ≥ minAttempts(5) 且答错过，而错题没有这个门槛，
+    // 所以「做了几道、错了几道但不足 5 次」时会出现 weak=[] 而 mode='weak'。
+    // 旧代码直接取 pack.weak[0].acc，在这种场景下抛 TypeError（2026-09-14 实机验证抓到）。
+    if (pack.mode === 'weak' && pack.weak && pack.weak.length) {
       const w = pack.weak[0];
       acc.textContent = Math.round(w.acc * 100) + '%';
       hint.textContent = w.chapter + ' 最弱' + (pack.weak.length > 1 ? ' · 共 ' + pack.weak.length + ' 章' : '');
     } else {
       acc.textContent = '';
-      // 同样降级成随机包，但「没练过」和「练了没弱项」要说清楚，否则用户以为按钮坏了
-      hint.textContent = pack.attempts ? '（暂无明显弱项）' : '（还没有练习记录）';
+      // 同样降级成随机包，但「没练过」「练了没弱项」「只有错题还没成弱章」要说清楚，否则用户以为按钮坏了
+      hint.textContent = pack.attempts
+        ? (pack.fromWrong ? `（错题 ${pack.fromWrong} 题，还没攒成弱章）` : '（暂无明显弱项）')
+        : '（还没有练习记录）';
     }
     return pack;
   }
@@ -530,21 +563,26 @@
   let mem = null;
   async function startMemorize(opts) {
     opts = opts || {};
+    stopTimer(mem);                        // v21：防上一轮的 interval 泄漏
     const progs = await DB.listProgress(S.bank.id);
     const map = {}; progs.forEach(p => map[p.qid] = p);
     const now = Date.now();
     // opts.all：错题本进来时不按记忆曲线过滤，错的全部过一遍
     let due = opts.all ? S.pool.slice() : S.pool.filter(q => !map[q.id] || map[q.id].due <= now);
     if (!due.length) due = S.pool.slice(); // 全部复习完 -> 全部过一遍
-    mem = { list: shuffle(due), i: 0, map };
+    mem = { list: shuffle(due), i: 0, map, startAt: Date.now(), timer: null };
     setBack('bank', '‹ 题库');
     $('#title').textContent = opts.title || '背题';
     renderMemorize();
   }
   function renderMemorize() {
     const view = $('#view-study'); showView('study');
+    if (mem) mem.locked = false;          // v14：每题渲染时解锁，防止连点跳两题
     if (mem.i >= mem.list.length) {
-      view.innerHTML = `<div class="empty"><div style="font-size:40px">🎉</div>本轮背完啦！<br><span class="muted">按记忆曲线，该复习的都过了一遍</span></div>
+      const used = fmtElapsed(Date.now() - (mem.startAt || Date.now()));
+      stopTimer(mem);                     // v21：本轮计时停止
+      SFX.done();                         // v22：背完收尾音
+      view.innerHTML = `<div class="empty"><div style="font-size:40px">🎉</div>本轮背完啦！<br><span class="muted">按记忆曲线，该复习的都过了一遍 · 用时 ${used}</span></div>
         <button class="btn" onclick="location.reload()">返回</button>`;
       return;
     }
@@ -564,9 +602,19 @@
       back = `<div class="def">答案：${esc(Scoring.answerText(q))}</div>`;
     }
     if (q.explanation) back += `<div class="exp">解析：${esc(q.explanation)}</div>`;
+    // v14：真 3D 翻转结构 —— 正反面同时渲染、grid 叠放，翻面只是加 .flipped 转 180°
+    // （旧版是 innerHTML 硬塞 front+back，没有任何转场，被用户吐槽"假翻转"）
     view.innerHTML =
-      `<div class="progress-top"><span>${mem.i + 1}/${total}</span><div class="progress-bar"><span style="width:${(mem.i / total) * 100}%"></span></div></div>` +
-      `<div class="card-flip" id="card">${front}</div>` +
+      `<div class="progress-top"><span class="pnum">${mem.i + 1}/${total}</span>` +
+      `<span class="mtimer" id="mtTimer">⏱ ${fmtElapsed(Date.now() - (mem.startAt || Date.now()))}</span>` +
+      `<div class="progress-bar"><span style="width:${(mem.i / total) * 100}%"></span></div></div>` +
+      `<div class="study-body slide-in">` +
+      `<div class="flip3d" id="card">` +
+        `<div class="flip3d-inner">` +
+          `<div class="flip-face flip-front">${front}</div>` +
+          `<div class="flip-face flip-back"><div class="tag">答案</div>${back}</div>` +
+        `</div>` +
+      `</div>` +
       `<div class="flip-hint" id="flipHint">点击卡片或下方按钮翻面看答案</div>` +
       `<button class="btn" id="flipBtn" style="margin-top:14px">显示答案</button>` +
       `<div id="rateArea" class="hidden">` +
@@ -574,23 +622,39 @@
       `<button class="btn rate-forget" data-q="1">😵 忘记</button>` +
       `<button class="btn rate-dim" data-q="3">🤔 模糊</button>` +
       `<button class="btn rate-know" data-q="5">😎 记住</button>` +
-      `</div></div>`;
+      `</div></div>` +
+      `</div>`;
+    let flipped = false;
     const flip = () => {
-      $('#card').innerHTML = front + back;
+      if (flipped) return;                 // 翻面只触发一次
+      flipped = true;
+      SFX.flip();                          // v22：翻卡「刷刷」纸声
+      const card = $('#card');
+      card.classList.add('flipped');
+      card.onclick = null;                 // 翻过去之后再点卡片不再重复触发
       $('#flipBtn').classList.add('hidden');
       $('#flipHint').classList.add('hidden');
-      $('#rateArea').classList.remove('hidden');
+      const ra = $('#rateArea');
+      ra.classList.remove('hidden');
+      ra.classList.add('fade-in');         // 自评按钮组淡入，避免"啪"地出现
     };
     mem.renderedAt = Date.now();   // F2：展示→自评的耗时起点
+    startTimerChip(mem);           // v21：本轮用时 chip
     $('#flipBtn').onclick = flip;
     $('#card').onclick = flip;
     $('#rateArea').querySelectorAll('button').forEach(b => {
       b.onclick = async () => {
+        if (mem.locked) return;            // v14：写库期间锁点击，防连点连跳两题
+        mem.locked = true;
+        const qv = +b.dataset.q;
+        if (qv <= 1) SFX.wrong();          // v22：自评音效——忘记/模糊/记住
+        else if (qv >= 5) SFX.right();
+        else SFX.neutral();
         let p = mem.map[q.id] || { qid: q.id, bankId: S.bank.id, ease: 2.5, interval: 0, reps: 0, due: 0, lapses: 0 };
-        p = sm2(p, +b.dataset.q);
+        p = sm2(p, qv);
         mem.map[q.id] = p;
         await DB.saveProgress(p);
-        safe(DB.logSessions([{ bankId: S.bank.id, qid: q.id, mode: 'memorize', right: (+b.dataset.q) >= 3, ms: Date.now() - (mem.renderedAt || Date.now()) }]), '记录作答流水失败');
+        safe(DB.logSessions([{ bankId: S.bank.id, qid: q.id, mode: 'memorize', right: qv >= 3, ms: Date.now() - (mem.renderedAt || Date.now()) }]), '记录作答流水失败');
         mem.i++; renderMemorize();
       };
     });
@@ -600,13 +664,15 @@
   let prac = null;
   async function startPractice(opts) {
     opts = opts || {};
-    prac = { list: shuffle(S.pool), i: 0, wrong: [], correct: 0, wrongIds: [], title: opts.title || '刷题' };
+    stopTimer(prac);                        // v21：防上一轮的 interval 泄漏
+    prac = { list: shuffle(S.pool), i: 0, wrong: [], correct: 0, wrongIds: [], title: opts.title || '刷题', startAt: Date.now(), timer: null };
     setBack('bank', '‹ 题库');
     $('#title').textContent = prac.title;
     renderPractice();
   }
   function renderPractice() {
     const view = $('#view-study'); showView('study');
+    if (prac) prac.locked = false;        // v14：每题渲染时解锁，防连点连跳
     if (prac.i >= prac.list.length) return renderPracticeResult();
     const q = prac.list[prac.i];
     const total = prac.list.length;
@@ -639,9 +705,14 @@
       body = `<div class="q-stem"><span class="qnum">${TYPE_LABEL[q.type]} ${prac.i + 1}/${total}</span>${esc(q.stem)}</div>` +
         opts.map(o => `<div class="option" data-k="${o.key}"><span class="key">${o.key}</span> ${esc(o.text)}</div>`).join('');
     }
+    // v14：题干+选项包一层 .slide-in，切题时从右侧滑入，不再是"啪"地整屏替换
     view.innerHTML =
-      `<div class="progress-top"><span>${prac.i + 1}/${total}</span><div class="progress-bar"><span style="width:${(prac.i / total) * 100}%"></span></div></div>` +
-      body + `<div id="pracFeedback"></div><div id="nextWrap" class="hidden"><button class="btn" id="nextBtn">下一题 ›</button></div>`;
+      `<div class="progress-top"><span class="pnum">${prac.i + 1}/${total}</span>` +
+      `<span class="mtimer" id="mtTimer">⏱ ${fmtElapsed(Date.now() - (prac.startAt || Date.now()))}</span>` +
+      `<div class="progress-bar"><span style="width:${(prac.i / total) * 100}%"></span></div></div>` +
+      `<div class="study-body slide-in">${body}</div>` +
+      `<div id="pracFeedback"></div><div id="nextWrap" class="hidden"><button class="btn" id="nextBtn">下一题 ›</button></div>`;
+    startTimerChip(prac);           // v21：本轮用时 chip
 
     // 自评题（名词解释 / 简答 / 长答案填空）
     if (Scoring.isSelfAssess(q)) {
@@ -687,11 +758,15 @@
           opts.forEach(o => { if (keys.indexOf(String(o.dataset.k).toUpperCase()) >= 0) o.classList.add('correct'); });
         }
         if (!right) op.classList.add('wrong');
+        // v14：答对 → 正确项弹一下；答错 → 选中项抖一下。在解析文字出来之前先给到"手感"
+        if (right) view.querySelectorAll('.option.correct').forEach(o => o.classList.add('pop'));
+        else op.classList.add('shake');
         finishPractice(q, right);
       };
     });
   }
   async function finishPractice(q, right) {
+    if (right) SFX.right(); else SFX.wrong();   // v22：判分音效（选项/填空/自评三条路都汇到这里）
     const fb = $('#pracFeedback');
     let html = right
       ? `<div class="feedback ok">✓ 答对${q.explanation ? `<span class="sub">解析：${esc(q.explanation)}</span>` : ''}</div>`
@@ -705,7 +780,13 @@
 
     // 先让用户可以继续，再写库 —— 存储失败绝不能把人卡死在这一题
     $('#nextWrap').classList.remove('hidden');
-    $('#nextBtn').onclick = () => { prac.i++; renderPractice(); };
+    // v14：锁一下，避免连点"下一题"跳掉两题
+    $('#nextBtn').onclick = () => {
+      if (prac.locked) return;
+      prac.locked = true;
+      SFX.flip();                          // v22：切题轻「刷」
+      prac.i++; renderPractice();
+    };
 
     await safe((async () => {
       let p = await DB.getProgress(q.id) || { qid: q.id, bankId: S.bank.id, ease: 2.5, interval: 0, reps: 0, due: 0, lapses: 0 };
@@ -724,9 +805,15 @@
   function renderPracticeResult() {
     const total = prac.list.length;
     const acc = total ? Math.round(prac.correct / total * 100) : 0;
+    // v21：本轮用时 + 平均每题（复习错题重开的 prac 有自己的 startAt）
+    const usedMs = Date.now() - (prac.startAt || Date.now());
+    const used = fmtElapsed(usedMs);
+    const avg = total ? Math.max(1, Math.round(usedMs / 1000 / total)) : 0;
+    stopTimer(prac);
+    SFX.done();                            // v22：刷完收尾音
     const view = $('#view-study');
     view.innerHTML =
-      `<div class="result-score">${acc}%</div><div class="result-sub">答对 ${prac.correct} / ${total}</div>` +
+      `<div class="result-score">${acc}%</div><div class="result-sub">答对 ${prac.correct} / ${total} · 用时 ${used} · 平均 ${avg} 秒/题</div>` +
       (prac.wrongIds.length
         ? `<button class="btn" id="reviewWrong">🔁 复习错题（${prac.wrongIds.length}）</button>
            <div style="height:10px"></div>`
@@ -736,7 +823,8 @@
     if (prac.wrongIds.length) $('#reviewWrong').onclick = async () => {
       const map = {}; S.questions.forEach(q => map[q.id] = q);
       const title = prac.title;
-      prac = { list: shuffle(prac.wrongIds.map(id => map[id]).filter(Boolean)), i: 0, wrong: [], correct: 0, wrongIds: [], title: title };
+      stopTimer(prac);
+      prac = { list: shuffle(prac.wrongIds.map(id => map[id]).filter(Boolean)), i: 0, wrong: [], correct: 0, wrongIds: [], title: title, startAt: Date.now(), timer: null };
       renderPractice();
     };
     $('#redoPrac').onclick = () => startPractice({ title: prac.title });
@@ -777,7 +865,7 @@
     $('#startExam').onclick = () => {
       let list = gradable;
       if (settings.n !== 'all') { const k = Math.min(+settings.n, list.length); list = shuffle(list).slice(0, k); }
-      exam = { list, i: 0, min: Math.max(0, +$('#examMin').value || 0), shuffleOpt: settings.shuffleOpt, answers: {}, endAt: 0, timer: null, msPer: {}, enterTs: 0 };
+      exam = { list, i: 0, min: Math.max(0, +$('#examMin').value || 0), shuffleOpt: settings.shuffleOpt, answers: {}, endAt: 0, startAt: Date.now(), timer: null, msPer: {}, enterTs: 0, warned: false };
       if (exam.min > 0) exam.endAt = Date.now() + exam.min * 60000;
       setBack('bank', '‹ 题库'); $('#title').textContent = '考试中';
       renderExam();
@@ -792,21 +880,34 @@
   }
   function renderExam() {
     const view = $('#view-study'); showView('study');
+    if (exam) exam.locked = false;        // v14：每题渲染时解锁，防连点连跳
     if (exam.i >= exam.list.length) return submitExam();
     const q = exam.list[exam.i];
     const total = exam.list.length;
-    let timerHtml = '';
+    // v21：时间条常驻——限时时倒计时（v14 的最后 60 秒告警保留），不限时改计「已用」
+    let timerHtml;
     if (exam.min > 0) {
       const left = Math.max(0, exam.endAt - Date.now());
-      const mm = pad2(Math.floor(left / 60000));
-      const ss = pad2(Math.floor((left % 60000) / 1000));
-      timerHtml = `<span id="timer">⏱ ${mm}:${ss}</span>`;
-      if (!exam.timer) exam.timer = setInterval(() => {
-        const l = Math.max(0, exam.endAt - Date.now());
-        const e = $('#timer'); if (e) e.textContent = `⏱ ${pad2(Math.floor(l / 60000))}:${pad2(Math.floor((l % 60000) / 1000))}`;
-        if (l <= 0) { clearInterval(exam.timer); exam.timer = null; submitExam(); }
-      }, 1000);
+      timerHtml = `<span id="timer"${left <= 60000 ? ' class="timer-warn"' : ''}>⏱ ${pad2(Math.floor(left / 60000))}:${pad2(Math.floor((left % 60000) / 1000))}</span>`;
+    } else {
+      timerHtml = `<span id="timer">⏱ 已用 ${fmtElapsed(Date.now() - (exam.startAt || Date.now()))}</span>`;
     }
+    if (!exam.timer) exam.timer = setInterval(() => {
+      if (!exam) return;
+      const e = $('#timer');
+      if (exam.min > 0) {
+        const l = Math.max(0, exam.endAt - Date.now());
+        if (e) {
+          e.textContent = `⏱ ${pad2(Math.floor(l / 60000))}:${pad2(Math.floor((l % 60000) / 1000))}`;
+          e.classList.toggle('timer-warn', l <= 60000);
+        }
+        // v22：进入最后 60 秒响一次提示音（与变红同步，只响一次不轰炸）
+        if (l <= 60000 && !exam.warned) { exam.warned = true; SFX.warn(); }
+        if (l <= 0) { clearInterval(exam.timer); exam.timer = null; submitExam(); }
+      } else if (e) {
+        e.textContent = `⏱ 已用 ${fmtElapsed(Date.now() - (exam.startAt || Date.now()))}`;
+      }
+    }, 1000);
     let body = '';
     if (q.type === 'judge') {
       body = `<div class="q-stem"><span class="qnum">${timerHtml}判断题 ${exam.i + 1}/${total}</span>${esc(q.stem)}</div>
@@ -822,8 +923,9 @@
         opts.map(o => `<div class="option" data-k="${o.key}"><span class="key">${o.key}</span> ${esc(o.text)}</div>`).join('');
     }
     view.innerHTML =
-      `<div class="progress-top"><span>${exam.i + 1}/${total}</span><div class="progress-bar"><span style="width:${(exam.i / total) * 100}%"></span></div></div>` +
-      body + `<div id="examNav" class="btn-row" style="margin-top:14px">
+      `<div class="progress-top"><span class="pnum">${exam.i + 1}/${total}</span><div class="progress-bar"><span style="width:${(exam.i / total) * 100}%"></span></div></div>` +
+      `<div class="study-body slide-in">${body}</div>` +
+      `<div id="examNav" class="btn-row" style="margin-top:14px">
         <button class="btn secondary" id="prevBtn">上一题</button>
         <button class="btn" id="nextExamBtn">${exam.i + 1 >= total ? '交卷' : '下一题 ›'}</button>
       </div>`;
@@ -844,10 +946,13 @@
       inp.onchange = save;
       inp.onkeydown = (e) => { if (e.key === 'Enter') { save(); const n = $('#nextExamBtn'); if (n) n.click(); } };
     }
-    $('#prevBtn').onclick = () => { if (exam.i > 0) { accExamMs(); exam.i--; renderExam(); } };
+    $('#prevBtn').onclick = () => {
+      if (exam.locked) return;
+      if (exam.i > 0) { exam.locked = true; accExamMs(); exam.i--; renderExam(); }
+    };
     $('#nextExamBtn').onclick = () => {
       if (exam.i + 1 >= total) { if (confirm('确定交卷？')) submitExam(); }
-      else { accExamMs(); exam.i++; renderExam(); }
+      else { if (exam.locked) return; exam.locked = true; accExamMs(); exam.i++; renderExam(); }
     };
     exam.enterTs = Date.now();
   }
@@ -863,7 +968,7 @@
   }
   async function submitExam() {
     if (!exam) return;                     // 已经离开考试页（定时器晚到一步）时直接忽略
-    if (exam.timer) { clearInterval(exam.timer); exam.timer = null; }
+    stopTimer(exam);
     accExamMs();                           // 结算最后一题（或超时那一刻）的停留时长
     let correct = 0; const wrongList = [];
     const byChapter = {};
@@ -880,6 +985,8 @@
     });
     const total = exam.list.length;
     const score = total ? Math.round(correct / total * 100) : 0;
+    // v21：答题用时 = 每题停留时长之和（不含发呆/切走的时间，是「纯做题」口径）
+    const usedMs = Object.keys(exam.msPer || {}).reduce((n, k) => n + (exam.msPer[k] || 0), 0);
     const view = $('#view-study');
     let chapterHtml = '';
     Object.keys(byChapter).forEach(ch => {
@@ -896,12 +1003,13 @@
         ${w.q.explanation ? `<div class="muted" style="font-size:13px;margin-top:4px">解析：${esc(w.q.explanation)}</div>` : ''}</div>`;
     });
     view.innerHTML =
-      `<div class="result-score">${score}</div><div class="result-sub">得分 ${correct} / ${total}</div>` +
+      `<div class="result-score">${score}</div><div class="result-sub">得分 ${correct} / ${total} · 答题用时 ${fmtElapsed(usedMs)}</div>` +
       (noAns.length ? `<div class="muted" style="text-align:center;margin:10px 0;font-size:13px">⚠️ 有 ${noAns.length} 道题没识别到答案，已按答错计</div>` : '') +
       (chapterHtml ? `<h3 style="font-size:15px">章节正确率</h3>${chapterHtml}` : '') +
       (wrongList.length ? `<h3 style="font-size:15px;margin-top:18px">错题回顾（${wrongList.length}）</h3>${wrongHtml}` : '<div class="empty">满分，牛！</div>') +
       `<div style="height:10px"></div><button class="btn secondary" id="backBank2">返回题库</button>`;
     $('#backBank2').onclick = () => openBank(S.bank.id);
+    SFX.done();                            // v22：交卷收尾音
 
     // 结果已经渲染出来了再写库，存储失败不会挡住看成绩；失败只提示
     await safe(DB.bulkUpdateProgress(S.bank.id, updates, 'exam'), '保存成绩失败');
@@ -944,6 +1052,10 @@
 
   function openRangePicker(mode) {
     S.pendingMode = mode;
+    // v21：选中的模式卡片保持高亮（桌面端没有触摸态，之前完全看不出选了哪个）
+    document.querySelectorAll('#view-bank .mode-card').forEach(c => c.classList.toggle('sel', c.dataset.mode === mode));
+    $('#rangeMode').textContent = MODE_LABEL[mode] + ' · ';
+    $('#rangeStart').textContent = '开始' + MODE_LABEL[mode] + ' ›';
     const bar = $('#rangeBar');
     bar.classList.remove('hidden');
     $('#rangeSeg').querySelectorAll('button').forEach(x => x.classList.toggle('on', x.dataset.v === 'all'));
@@ -962,9 +1074,17 @@
         if (!list.length) { toast('这些章节下还没有题目'); return; }
       }
       bar.classList.add('hidden');
+      clearModeSel();
       startMode(S.pendingMode, list);
     };
     bar.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+  }
+
+  // v21：清掉模式卡片的选中态、还原开始按钮文案（开始/取消/离开题库时调用）
+  function clearModeSel() {
+    document.querySelectorAll('#view-bank .mode-card.sel').forEach(c => c.classList.remove('sel'));
+    const b = $('#rangeStart');
+    if (b) b.textContent = '开始 ›';
   }
 
   // ---------- 模式入口 ----------
@@ -1017,10 +1137,18 @@
   }
 
   async function handleFiles(files) {
+    // v18：先同步快照再进循环。FileList 是「活的」——onchange 里紧跟的
+    // fi.value='' 会把它当场清空，第一个 await 挂起期间列表就没了，
+    // 异步回来继续迭代直接结束（实测：多选 15 个只导入第 1 个，且无报错）
+    const list = Array.from(files || []);
     let imported = 0, total = 0;
     const errBefore = errShown;
     resetCleaned();
-    for (const f of files) {
+    for (let i = 0; i < list.length; i++) {
+      const f = list[i];
+      // v19：多文件时给过程反馈——批量导入要数秒，全程无提示会被当成卡死；
+      // toast() 连续调用会互相接续，导入完由结尾的汇总提示接管
+      if (list.length > 1) toast(`导入中 ${i + 1}/${list.length}…`);
       // 单个文件失败（读不了 / 编码问题）不中断其余文件
       const n = await safe(f.text().then(t => saveParsed(t, f.name)), '读取文件失败') || 0;
       if (n) { imported++; total += n; }
@@ -1083,6 +1211,66 @@
     });
   }
 
+  // ---------- v18：拖放取文件（多文件 + 整个文件夹） ----------
+  // 文件夹在 DataTransfer.files 里不存在，只有 webkitGetAsEntry() 一条路，逐层展开。
+  // 兼容性：Chromium/Edge/Safari/Firefox 都支持 webkitGetAsEntry；不支持时退回 files 列表。
+  function entryFile(entry) {
+    return new Promise(res => { try { entry.file(f => res(f), () => res(null)); } catch (e) { res(null); } });
+  }
+  // readEntries 单次最多吐 100 条，必须反复读到空批为止
+  function readDirAll(dirEntry) {
+    return new Promise(res => {
+      const out = [];
+      let reader;
+      try { reader = dirEntry.createReader(); } catch (e) { return res(out); }
+      const next = () => reader.readEntries(batch => {
+        if (!batch || !batch.length) return res(out);
+        batch.forEach(b => out.push(b));
+        next();
+      }, () => res(out));
+      next();
+    });
+  }
+  async function walkEntry(entry, out) {
+    if (!entry) return;
+    // .git / .DS_Store 这类隐藏项直接跳过
+    if (typeof entry.name === 'string' && entry.name.startsWith('.')) return;
+    if (entry.isFile) { const f = await entryFile(entry); if (f) out.push(f); return; }
+    if (entry.isDirectory) {
+      const kids = await readDirAll(entry);
+      for (const k of kids) await walkEntry(k, out);
+    }
+  }
+  async function filesFromDataTransfer(dt) {
+    const items = (dt && dt.items) || [];
+    const entries = [];
+    for (let i = 0; i < items.length; i++) {
+      try {
+        const it = items[i];
+        if (it.kind && it.kind !== 'file') continue;
+        if (typeof it.webkitGetAsEntry !== 'function') continue;
+        const en = it.webkitGetAsEntry();
+        if (en) entries.push(en);
+      } catch (e) {}
+    }
+    // 混拖（文件 + 文件夹）时 files 里没有目录，所以只要有目录就统一走 entries 展开
+    if (entries.some(en => en.isDirectory)) {
+      const out = [];
+      for (const en of entries) await walkEntry(en, out);
+      return out;
+    }
+    if (dt && dt.files && dt.files.length) return Array.from(dt.files);
+    return [];
+  }
+  function importDropped(dt, into) {
+    // into：'import' 走题库导入，'slice' 走切片导出
+    safe(filesFromDataTransfer(dt).then(list => {
+      const ok = list.filter(f => /\.(md|markdown|txt|text)$/i.test(f.name));
+      if (ok.length) return into === 'slice' ? handleSliceFiles(ok) : handleFiles(ok);
+      toast('没找到 .md / .txt 文件');
+    }), '读取拖入文件失败');
+  }
+
   async function handleSliceFiles(files) {
     const list = Array.from(files);
     let totalSlices = 0;
@@ -1098,7 +1286,6 @@
         await new Promise(res => setTimeout(res, 350));
         downloadText(o.name, o.content);
       }
-      seq++;
     }
     toast(`已导出 ${list.length} 个文件 → ${totalSlices} 个切片`);
   }
@@ -1113,46 +1300,114 @@
     $('#importSeg').querySelectorAll('button').forEach(b => b.classList.toggle('on', b.dataset.v === v));
   }
 
+  // ---------- v9：备份 / 恢复（跨设备同步） ----------
+  // v17：导出备份 —— 手机上优先调系统分享面板（直接发微信 / QQ / 文件传输助手），
+  // 桌面或不支持 Web Share 的浏览器退回「下载 .json」。Web Share 是浏览器原生 API，零依赖。
+  async function exportBackup() {
+    const dump = await DB.dumpAll();
+    const d = new Date();
+    const pad = n => String(n).padStart(2, '0');
+    const name = `题库备份_${d.getFullYear()}${pad(d.getMonth() + 1)}${pad(d.getDate())}.json`;
+    const json = JSON.stringify(dump);
+    const file = new File([json], name, { type: 'application/json' });
+    if (navigator.canShare && navigator.canShare({ files: [file] })) {
+      try {
+        await navigator.share({ files: [file], title: '题库备份' });
+        toast('已调出分享；发到手机后在手机端点「恢复备份」');
+      } catch (e) {
+        if (e && e.name === 'AbortError') return;   // 用户取消了分享面板，不是错误
+        throw e;
+      }
+    } else {
+      downloadText(name, json);
+      toast('备份已导出；把该文件发到手机，在手机端点「恢复备份」');
+    }
+  }
+
+  // ---------- v20：恢复备份弹层 ----------
+  let pendingDump = null;
+  function closeRestoreModal() {
+    $('#restoreModal').classList.add('hidden');
+    pendingDump = null;
+  }
+  // 恢复/合并后数据整体变了：一律回首页重走，避免停留在已被替换的旧题库视图上
+  function refreshAfterRestore() {
+    S.bank = null; S.questions = []; S.pool = []; S.outline = [];
+    setBack('home');
+    $('#title').textContent = '国际法题库';
+    showView('home');
+    safe(renderHome(), '刷新列表失败');
+  }
+
   // ---------- 事件绑定 ----------
   function bind() {
     $('#backBtn').onclick = () => { if (S.back === 'bank') openBank(S.bank.id); else { $('#title').textContent = '卡片题库'; renderHome(); } };
     const fi = $('#fileInput');
     $('#dropZone').onclick = () => fi.click();
-    fi.onchange = () => { if (fi.files.length) handleFiles(fi.files); fi.value = ''; };
+    // v18：先取快照再清 input —— value='' 会当场清空 FileList，
+    // 异步导入循环回来就拿不到后面的文件（多选只剩第 1 个的根因）
+    fi.onchange = () => {
+      const picked = Array.from(fi.files);
+      fi.value = '';
+      if (picked.length) handleFiles(picked);
+    };
     const dz = $('#dropZone');
     ['dragover', 'dragenter'].forEach(ev => dz.addEventListener(ev, e => { e.preventDefault(); dz.classList.add('over'); }));
     ['dragleave', 'drop'].forEach(ev => dz.addEventListener(ev, e => { e.preventDefault(); dz.classList.remove('over'); }));
-    dz.addEventListener('drop', e => { if (e.dataTransfer.files.length) handleFiles(e.dataTransfer.files); });
+    dz.addEventListener('drop', e => importDropped(e.dataTransfer, 'import'));
     // 导入方式切换 / 粘贴导入
     $('#importSeg').querySelectorAll('button').forEach(b => b.onclick = () => switchImport(b.dataset.v));
     $('#pasteImport').onclick = handlePaste;
     // v8：切片导出（可选入口，与直接导入互不影响）
     const si = $('#sliceInput');
     $('#sliceDrop').onclick = () => si.click();
-    si.onchange = () => { if (si.files.length) safe(handleSliceFiles(si.files), '切片导出失败'); si.value = ''; };
+    si.onchange = () => {
+      const picked = Array.from(si.files);
+      si.value = '';
+      if (picked.length) safe(handleSliceFiles(picked), '切片导出失败');
+    };
     const sd = $('#sliceDrop');
     ['dragover', 'dragenter'].forEach(ev => sd.addEventListener(ev, e => { e.preventDefault(); sd.classList.add('over'); }));
     ['dragleave', 'drop'].forEach(ev => sd.addEventListener(ev, e => { e.preventDefault(); sd.classList.remove('over'); }));
-    sd.addEventListener('drop', e => { if (e.dataTransfer.files.length) safe(handleSliceFiles(e.dataTransfer.files), '切片导出失败'); });
-    // v9：备份 / 恢复（跨设备同步）
-    $('#backupBtn').onclick = () => safe((async () => {
-      const dump = await DB.dumpAll();
-      const d = new Date();
-      const pad = n => String(n).padStart(2, '0');
-      downloadText(`题库备份_${d.getFullYear()}${pad(d.getMonth() + 1)}${pad(d.getDate())}.json`, JSON.stringify(dump));
-      toast('备份已导出；把该文件发到手机，在手机端点「恢复备份」');
-    })(), '导出备份失败');
+    sd.addEventListener('drop', e => importDropped(e.dataTransfer, 'slice'));
+    // v9/v20：备份 / 恢复（跨设备同步）
+    $('#backupBtn').onclick = () => safe(exportBackup(), '导出备份失败');
+    // v20：恢复先读文件、再让用户选方式（合并 / 覆盖）——覆盖是破坏性操作，不能是唯一选项
     $('#restoreBtn').onclick = () => $('#restoreInput').click();
     $('#restoreInput').onchange = () => safe((async () => {
       const f = $('#restoreInput').files[0];
       $('#restoreInput').value = '';
       if (!f) return;
-      if (!confirm('恢复备份会覆盖本设备上的题库与学习进度，继续？')) return;
-      const dump = JSON.parse(await readAsText(f));
-      await DB.restoreAll(dump);
-      toast('恢复成功');
-      renderHome();
-    })(), '恢复备份失败');
+      let dump;
+      try { dump = JSON.parse(await readAsText(f)); }
+      catch (e) { toast('备份文件不是有效的 JSON'); return; }
+      if (!dump || dump.app !== 'card-quiz' || !Array.isArray(dump.banks)) { toast('备份文件格式不对'); return; }
+      pendingDump = dump;
+      $('#rmSummary').textContent =
+        `备份含 ${dump.banks.length} 个题库 · ${Array.isArray(dump.questions) ? dump.questions.length : 0} 题 · ` +
+        `${Array.isArray(dump.progress) ? dump.progress.length : 0} 条学习进度`;
+      $('#restoreModal').classList.remove('hidden');
+    })(), '读取备份失败');
+    $('#rmMerge').onclick = () => safe((async () => {
+      if (!pendingDump) return;
+      const st = await DB.mergeAll(pendingDump);
+      closeRestoreModal();
+      toast(`合并完成：新增题库 ${st.banksAdded}、更新 ${st.banksUpdated}、进度合入 ${st.progressMerged + st.progressAdded} 条` +
+        (st.duplicateNames ? `；⚠️ ${st.duplicateNames} 个同名题库（两端各自导入过），已都保留` : ''));
+      refreshAfterRestore();
+    })(), '合并恢复失败');
+    $('#rmOverwrite').onclick = () => {
+      if (!pendingDump) return;
+      if (!confirm('覆盖恢复会清空本机全部题库与学习进度，换成备份内容，继续？')) return;
+      safe((async () => {
+        await DB.restoreAll(pendingDump);
+        closeRestoreModal();
+        toast('已按备份覆盖恢复');
+        refreshAfterRestore();
+      })(), '覆盖恢复失败');
+    };
+    $('#rmCancel').onclick = closeRestoreModal;
+    $('#restoreModal').onclick = (e) => { if (e.target === $('#restoreModal')) closeRestoreModal(); };
     // v9：目录全部折叠 / 展开
     $('#outlineFold').onclick = () => {
       const nodes = Array.from($('#outlineTree').querySelectorAll('.ol-node'));
@@ -1170,8 +1425,12 @@
       if (!S.bank) return;
       safe(startWeakPack(), '组弱项专项包失败');
     };
-    // 题库内搜索
-    $('#qSearch').addEventListener('input', () => renderQuestionList($('#qSearch').value));
+    // 题库内搜索（v19：120ms 防抖——大题库上每个按键全量重渲列表会卡）
+    let searchTimer;
+    $('#qSearch').addEventListener('input', () => {
+      clearTimeout(searchTimer);
+      searchTimer = setTimeout(() => renderQuestionList($('#qSearch').value), 120);
+    });
     // 范围选择
     $('#rangeSeg').querySelectorAll('button').forEach(b => b.onclick = () => {
       $('#rangeSeg').querySelectorAll('button').forEach(x => x.classList.remove('on'));
@@ -1179,14 +1438,32 @@
       $('#chapterPicker').classList.toggle('hidden', b.dataset.v !== 'chapter');
       updateRangeHint();
     });
-    $('#rangeCancel').onclick = () => $('#rangeBar').classList.add('hidden');
+    $('#rangeCancel').onclick = () => { $('#rangeBar').classList.add('hidden'); clearModeSel(); };
+    // v22：音效开关（开关状态由 sfx.js 自己记 localStorage）
+    const sfxBtn = $('#sfxBtn');
+    const syncSfxBtn = () => { sfxBtn.textContent = SFX.enabled() ? '🔊' : '🔇'; };
+    syncSfxBtn();
+    sfxBtn.onclick = () => {
+      SFX.setEnabled(!SFX.enabled());
+      syncSfxBtn();
+      if (SFX.enabled()) SFX.right();      // 开的时候响一声给自己听
+      toast(SFX.enabled() ? '音效已开' : '音效已关');
+    };
     // 深色
+    // 状态栏/地址栏染色必须跟 data-theme 走，否则切到深色后顶部还留一条浅色
+    const syncThemeColor = () => {
+      const dark = document.documentElement.getAttribute('data-theme') === 'dark';
+      const meta = document.querySelector('meta[name="theme-color"]');
+      if (meta) meta.setAttribute('content', dark ? '#24211c' : '#fdfbf6');
+    };
     const saved = localStorage.getItem('theme');
     if (saved) document.documentElement.setAttribute('data-theme', saved);
+    syncThemeColor();
     $('#themeBtn').onclick = () => {
       const cur = document.documentElement.getAttribute('data-theme') === 'dark' ? 'light' : 'dark';
       document.documentElement.setAttribute('data-theme', cur);
       localStorage.setItem('theme', cur);
+      syncThemeColor();
     };
   }
 

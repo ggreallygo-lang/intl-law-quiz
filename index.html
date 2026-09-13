@@ -3,8 +3,9 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, maximum-scale=1, user-scalable=no" />
-  <meta name="theme-color" content="#4f46e5" />
-  <title>卡片题库 · 背题刷题考试</title>
+  <!-- 与 .appbar 底色一致，装成 PWA 后顶部不留色差；切深色时由 app.js 同步 -->
+  <meta name="theme-color" content="#fdfbf6" />
+  <title>LEXA · 国际法题库</title>
   <link rel="manifest" href="manifest.webmanifest" />
   <link rel="icon" href="icon.svg" type="image/svg+xml" />
   <link rel="apple-touch-icon" href="icon.svg" />
@@ -17,8 +18,9 @@
   <!-- 顶部栏 -->
   <div class="appbar">
     <button class="back hidden" id="backBtn">‹ 返回</button>
-    <h1 id="title">卡片题库</h1>
+    <h1><span class="brand-mark">LEXA</span><span class="brand-title" id="title">国际法题库</span></h1>
     <span class="spacer"></span>
+    <button class="iconbtn" id="sfxBtn" title="音效开关">🔊</button>
     <button class="iconbtn" id="themeBtn" title="切换深色">🌓</button>
   </div>
 
@@ -32,13 +34,13 @@
       <button data-v="slice">✂️ 切片导出</button>
     </div>
     <div class="drop" id="dropZone">
-      📥 点击选择或把 .md / .txt 文件拖到这里<br />
+      📥 点击选择（可一次多选）或把 .md / .txt 文件 / 整个文件夹拖到这里<br />
       <span class="muted" style="font-size:13px">自动解析成选择题 / 判断题 / 名词解释</span>
     </div>
     <input type="file" id="fileInput" accept=".md,.markdown,.txt,.text" multiple class="hidden" />
     <div id="sliceArea" class="hidden">
       <div class="drop" id="sliceDrop">
-        ✂️ 点击选择多个原始 .md / .txt（可拖入）<br />
+        ✂️ 点击选择多个原始 .md / .txt（可拖入文件或文件夹）<br />
         <span class="muted" style="font-size:13px">原文逐字切片（≤6000 字/片、题块边界切）→ 下载后送 AI 按《题库导入排版规范》修正 → 再导入</span>
       </div>
       <input type="file" id="sliceInput" accept=".md,.markdown,.txt,.text" multiple class="hidden" />
@@ -101,7 +103,7 @@
 
     <!-- 练习范围选择（点模式卡片后展开） -->
     <div id="rangeBar" class="range-bar hidden">
-      <div class="range-head">练习范围 <span class="muted" id="rangeHint"></span></div>
+      <div class="range-head"><b id="rangeMode"></b>练习范围 <span class="muted" id="rangeHint"></span></div>
       <div class="seg" id="rangeSeg">
         <button data-v="all" class="on">全部题目</button>
         <button data-v="chapter">按章节选</button>
@@ -136,12 +138,26 @@
   <!-- F1：错题本（内容全由 app.js 渲染） -->
   <div class="view hidden" id="view-wrong"></div>
 
+  <!-- v20：恢复备份方式选择（合并 / 覆盖 / 取消） -->
+  <div class="modal-mask hidden" id="restoreModal">
+    <div class="modal-card">
+      <h3>📥 恢复备份</h3>
+      <p class="muted" id="rmSummary" style="font-size:14px;margin:4px 0 14px"></p>
+      <button class="btn" id="rmMerge">🤝 合并恢复（推荐）</button>
+      <div class="muted" style="font-size:12px;margin:4px 0 12px">保留本机数据；学习进度按较新者合并，同一题库自动去重</div>
+      <button class="btn secondary" id="rmOverwrite">♻️ 覆盖恢复</button>
+      <div class="muted" style="font-size:12px;margin:4px 0 12px">清空本机全部题库与进度，完全换成备份内容（不可撤销）</div>
+      <button class="btn ghost" id="rmCancel">取消</button>
+    </div>
+  </div>
+
   <div class="toast" id="toast"></div>
 
   <script src="db.js"></script>
   <script src="parser.js"></script>
   <script src="slicer.js"></script>
   <script src="scoring.js"></script>
+  <script src="sfx.js"></script>
   <script src="app.js"></script>
   <script>
     if ('serviceWorker' in navigator) {

@@ -468,6 +468,11 @@
     return JUDGE_TRUE.test(trim(ans));
   }
 
+  // v17：括号内容是「分值/答题说明」而不是答案 —— 真题区块标题都带分值括号：
+  //   「一、单项选择题(本大题共30小题，每小题1分，共30分)」「…选择题(共40分)」
+  // 实测 201610：这类标题与注意事项行被当成填空题混进题库（3 道垃圾题）。
+  const RE_FILL_NOT_ANS = /共\s*\d+\s*分|本大题|每小题|答题卡|答题区域|注意事项/;
+
   /**
    * 填空题抽取：题干尾部（或下一行）的括号内容就是答案
    * 只在「以题号开头的块」上调用 —— 这是最重要的护栏，
@@ -485,7 +490,7 @@
     // B. 答案单独占一行（只看前 3 行，避免把后面的内容误当答案）
     for (let i = 1; i < Math.min(ls.length, 3); i++) {
       const m = ls[i].match(RE_PAREN_ONLY);
-      if (m && m[1].length) {
+      if (m && m[1].length && !RE_FILL_NOT_ANS.test(m[1])) {
         const stem = ls.slice(0, i)
           .map((l, k) => (k === 0 ? stripNumber(l) : l))
           .join('').replace(/\s+/g, ' ').trim();
@@ -501,6 +506,7 @@
       if (!m) continue;
       const answer = trim(m[1]);
       if (!answer || answer.length > 60) continue;         // 太长多半是补充说明不是答案
+      if (RE_FILL_NOT_ANS.test(answer)) continue;          // 分值/答题说明不是答案（v17）
       const stem = stripNumber(joined.slice(0, m.index).trim());
       if (stem.length < 4) continue;                       // 题干太短，多半误判
       return { stem: stem + BLANK, answer: answer };
@@ -519,12 +525,36 @@
   // 行内归一化：把同一行里的选项(A. B. C.)和答案/解析标记拆成独立行
   // 只在「以题号开头」或「含答案/解析标记」的行上做，避免误伤名词解释里的 "A." 字样
   const RE_ANS_MARK = /(?:答案|正确答案|参考答案|标准答案|answer|解析|答案解析|解答|解释)\s*[:：]?/i;
+  // v17：标记必须出现在行首或空白/标点之后才算「答案/解析」标记。
+  // 否则正文词语会被拦腰截断 —— 实测 201610：「C．强制性司法解释 D．咨询意见」
+  // 从「解释」处被切开，D 选项丢失 → 答案键护栏把整题丢弃（第 26 题凭空消失）。
+  function splitAtAnsMark(line) {
+    const re = new RegExp(RE_ANS_MARK.source, 'gi');
+    const cuts = [];
+    let m;
+    while ((m = re.exec(line))) {
+      if (m.index === 0 || /[\s，、。；：！？,;:!?\)\]）】〉》"”』」]/.test(line[m.index - 1])) {
+        cuts.push(m.index);
+      }
+      if (m.index === re.lastIndex) re.lastIndex++;   // 防零宽匹配死循环
+    }
+    if (!cuts.length) return [line];
+    const out = [];
+    for (let i = 0; i < cuts.length; i++) {
+      const end = i + 1 < cuts.length ? cuts[i + 1] : line.length;
+      const seg = line.slice(cuts[i], end).trim();
+      if (seg) out.push(seg);
+    }
+    const head = line.slice(0, cuts[0]).trim();
+    if (head) out.unshift(head);
+    return out;
+  }
   function normalizeLine(line) {
     // v6：先按「答案/解析」标记切段，再对每段尝试「行内多选项」拆分。
     // 顺序很关键 —— 反过来写会把「A.北京 B.上海 C.广州 答案B」里的
     // 「答案B」粘在最后一个选项上（实测回归测试 A6 就是这么挂的）。
     const out = [];
-    for (const seg of line.split(new RegExp('(?=' + RE_ANS_MARK.source + ')', 'i'))) {
+    for (const seg of splitAtAnsMark(line)) {
       const t = trim(seg);
       if (!t) continue;
       const r = splitInlineOptions(t);

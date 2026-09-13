@@ -461,6 +461,128 @@
     await txDone(t);
   }
 
+  // ---------- v20：合并恢复（不清空，按 id 归并） ----------
+  // 场景：PC 导出备份 → 手机「覆盖恢复」→ 手机刷题 → 手机导出 → 回 PC「合并恢复」。
+  // 两端同源（记录 id 一致）时进度无损合并；若两端各自独立导入过同一 .md，
+  // 记录 id 不同，会保留两个同名题库（统计里明示），不做内容级去重——风险大于收益。
+
+  /**
+   * 纯函数：同一题的两条进度记录合并（单测覆盖）。
+   * 计数逐字段取 max：同一份备份重复合并不虚增（幂等）；
+   * SM-2 状态（ease/interval/reps/due）取 reps 多的一方——练得更多的一方更接近真实记忆状态，
+   * due 跟随主记录而不是取 max，避免旧记录的超远 due 把复习推迟；
+   * lapses / lastWrong / lastReviewed 是单调量，取 max；wrongDismissed 跟随主记录。
+   */
+  function mergeProgressRecords(a, b) {
+    if (!a) return b;
+    if (!b) return a;
+    const maxCnt = (x, y) => Math.max(x || 0, y || 0);
+    const out = { qid: a.qid, bankId: a.bankId || b.bankId };
+    out.practice = {
+      correct: maxCnt(a.practice && a.practice.correct, b.practice && b.practice.correct),
+      wrong: maxCnt(a.practice && a.practice.wrong, b.practice && b.practice.wrong)
+    };
+    out.exam = {
+      correct: maxCnt(a.exam && a.exam.correct, b.exam && b.exam.correct),
+      wrong: maxCnt(a.exam && a.exam.wrong, b.exam && b.exam.wrong)
+    };
+    const prim = ((b.reps || 0) > (a.reps || 0)) ? b : a;
+    out.ease = prim.ease != null ? prim.ease : 2.5;
+    out.interval = prim.interval || 0;
+    out.reps = prim.reps || 0;
+    out.due = prim.due || 0;
+    out.lapses = Math.max(a.lapses || 0, b.lapses || 0);
+    out.lastWrong = Math.max(a.lastWrong || 0, b.lastWrong || 0);
+    out.lastReviewed = Math.max(a.lastReviewed || 0, b.lastReviewed || 0);
+    out.wrongDismissed = !!prim.wrongDismissed;
+    return out;
+  }
+
+  /** 纯函数：题库元数据二选一，updatedAt 新者胜（可能被重新导入过、outline 更新） */
+  function pickBankRecord(a, b) {
+    if (!a) return b;
+    if (!b) return a;
+    return (b.updatedAt || 0) > (a.updatedAt || 0) ? b : a;
+  }
+
+  /**
+   * 纯函数：合并计划（单测覆盖）。dump = 备份内容；local = 本机当前全量（4 个 getAll 的结果）。
+   * 返回待写入记录 + 统计。bank.count 按合并后的题目并集重算。
+   * 题目/题库按 id upsert（同 id 内容本应一致，取 dump 侧/新者）；
+   * 进度同 qid 走 mergeProgressRecords；流水按 id 去重（同源备份天然幂等）。
+   */
+  function planMerge(dump, local) {
+    if (!dump || dump.app !== 'card-quiz' || !Array.isArray(dump.banks) || !Array.isArray(dump.questions)) {
+      throw new Error('备份文件格式不对');
+    }
+    const L = local || {};
+    const localBanks = L.banks || [], localQuestions = L.questions || [];
+    const localProgress = L.progress || [], localSessions = L.sessions || [];
+    const bankById = {}; localBanks.forEach(b => { bankById[b.id] = b; });
+    const qById = {}; localQuestions.forEach(q => { qById[q.id] = q; });
+    const progById = {}; localProgress.forEach(p => { if (p && p.qid) progById[p.qid] = p; });
+    const sessIds = {}; localSessions.forEach(s => { if (s && s.id) sessIds[s.id] = 1; });
+
+    const questions = dump.questions.slice();
+    questions.forEach(q => { qById[q.id] = q; });
+
+    // 合并后的题目并集按 bankId 重算题量（含本机独有的题）
+    const countByBank = {};
+    Object.keys(qById).forEach(id => {
+      const q = qById[id];
+      countByBank[q.bankId] = (countByBank[q.bankId] || 0) + 1;
+    });
+
+    const stats = { banksAdded: 0, banksUpdated: 0, questions: questions.length,
+                    progressMerged: 0, progressAdded: 0, sessionsAdded: 0, duplicateNames: 0 };
+    const banks = [];
+    const localNames = {};
+    localBanks.forEach(b => { localNames[b.name] = (localNames[b.name] || 0) + 1; });
+    dump.banks.forEach(b => {
+      const cur = bankById[b.id] || null;
+      const win = pickBankRecord(cur, b);
+      banks.push(Object.assign({}, win, { count: countByBank[b.id] || 0 }));
+      if (cur) stats.banksUpdated++; else stats.banksAdded++;
+      if (!cur && localNames[b.name]) stats.duplicateNames++;   // 两端各自导入过同一文件
+    });
+
+    const progress = [];
+    (dump.progress || []).forEach(p => {
+      if (!p || !p.qid) return;
+      const cur = progById[p.qid];
+      if (cur) { progress.push(mergeProgressRecords(cur, p)); stats.progressMerged++; }
+      else { progress.push(p); stats.progressAdded++; }
+    });
+
+    const sessions = [];
+    (dump.sessions || []).forEach(s => {
+      if (!s || !s.id) return;
+      if (!sessIds[s.id]) { sessions.push(s); stats.sessionsAdded++; }
+    });
+
+    return { banks: banks, questions: questions, progress: progress, sessions: sessions, stats: stats };
+  }
+
+  /** 整机合并恢复：先只读快照本机全量 → 纯函数算合并计划 → 单事务写入 */
+  async function mergeAll(dump) {
+    const local = {
+      banks: await reqP((await tx('banks', 'readonly')).getAll()),
+      questions: await reqP((await tx('questions', 'readonly')).getAll()),
+      progress: await reqP((await tx('progress', 'readonly')).getAll()),
+      sessions: await reqP((await tx('sessions', 'readonly')).getAll())
+    };
+    const plan = planMerge(dump, local);          // 格式不对在这里抛
+    const db = await open();
+    const t = db.transaction(['banks', 'questions', 'progress', 'sessions'], 'readwrite');
+    const bs = t.objectStore('banks'), qs = t.objectStore('questions'), ps = t.objectStore('progress'), ss = t.objectStore('sessions');
+    plan.banks.forEach(b => bs.put(b));
+    plan.questions.forEach(q => qs.put(q));
+    plan.progress.forEach(p => ps.put(p));
+    plan.sessions.forEach(s => ss.put(s));
+    await txDone(t);
+    return plan.stats;
+  }
+
   // ---------- F2：sessions 作答流水（统计面板） ----------
   // 建表抽成纯函数：升级逻辑（老库加表不丢数据）可以用 stub 单测，不依赖真 IndexedDB
   function ensureSessionsStore(db) {
@@ -659,6 +781,7 @@
     dayKey, aggTotals, dailyCounts, streakDays,
     chapterAccuracy, weakChapters, weakPack,
     dumpAll, restoreAll,
+    mergeProgressRecords, pickBankRecord, planMerge, mergeAll,
     setEventHandler, isQuotaError, uid
   };
 });

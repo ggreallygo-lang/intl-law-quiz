@@ -8,12 +8,15 @@
  *   2. 只缓存同源资源，且限制到 SHELL 白名单，避免缓存无限增长。
  *   3. 缓存前缀化：换版本时按前缀清理旧缓存，不再依赖精确名字匹配。
  */
-const CACHE = 'card-quiz-v13';   // v13：F18 弱项专项包（弱章 60% + 错题 40% 一键组卷）
+const CACHE = 'card-quiz-v22';   // v22：手机适配（iOS防缩放/dvh/:active）+ Web Audio 音效系统（sfx.js，运行时文件 12→13）
+                                 // 注意：本 SW 对同源资源是 cache-first，改了 styles.css/app.js
+                                 // 必须同步改这里，否则老用户永远拿到旧样式。
 const PREFIX = 'card-quiz-';
 const SHELL = [
   './', './index.html', './styles.css',
-  './app.js', './db.js', './parser.js', './scoring.js', './slicer.js',
-  './manifest.webmanifest', './icon.svg'
+  './app.js', './db.js', './parser.js', './scoring.js', './slicer.js', './sfx.js',
+  './manifest.webmanifest', './icon.svg',
+  './bg-light.webp', './bg-dark.webp'
 ];
 
 self.addEventListener('install', (e) => {
