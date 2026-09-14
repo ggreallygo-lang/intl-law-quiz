@@ -126,8 +126,9 @@ body {
   box-shadow: var(--shadow);
   animation: viewIn .22s var(--ease) both;
   /* v28：设置弹层内容变多（音效/音效包/震动/BGM），小屏上底部按钮会被挤出视外够不着
-     ——限高 + 内部滚动（与 .plan-card 同策略） */
-  max-height: 86dvh; overflow-y: auto;
+     ——限高 + 内部滚动（与 .plan-card 同策略）
+     v29：加 vh 兜底——X5 等老内核不认 dvh 时整条声明失效，限高直接没了（用户截图实锤） */
+  max-height: 86vh; max-height: 86dvh; overflow-y: auto;
 }
 .modal-card h3 { margin: 0; font-size: 17px; }
 .modal-card .btn { width: 100%; }
@@ -297,7 +298,7 @@ body {
 /* 学习卡片（背题） */
 .card-flip {
   background: var(--surface); border-radius: var(--radius); box-shadow: var(--shadow);
-  min-height: 42vh; padding: 22px; display: flex; flex-direction: column;
+  min-height: 38vh; padding: 22px;   /* v29：42→38，短题卡不再大片空白 */ display: flex; flex-direction: column;
   border: 1px solid var(--line);
 }
 
@@ -318,7 +319,7 @@ body {
   -webkit-backface-visibility: hidden;
   background: var(--surface); border: 1px solid var(--line);
   border-radius: var(--radius); box-shadow: var(--shadow);
-  min-height: 42vh; padding: 22px;
+  min-height: 38vh; padding: 22px;   /* v29：42→38，短题卡不再大片空白 */
   display: flex; flex-direction: column;
 }
 .flip-back { transform: rotateY(180deg); }
@@ -949,8 +950,8 @@ body {
 .goal-hint { margin-top: 8px; font-size: 12px; color: var(--muted); }
 .goal-hint button { color: var(--primary); border: none; background: none; padding: 0; font-size: 12px; cursor: pointer; font-weight: 700; }
 
-/* 计划弹层：内容多，允许滚动 */
-.plan-card { max-height: 84dvh; overflow-y: auto; }
+/* 计划弹层：内容多，允许滚动（v29 加 vh 兜底，同 .modal-card） */
+.plan-card { max-height: 84vh; max-height: 84dvh; overflow-y: auto; }
 .plan-card .field { margin-top: 12px; }
 .plan-card input, .plan-card select {
   width: 100%; padding: 9px 10px; border: 1px solid var(--line); border-radius: 10px;
@@ -969,12 +970,23 @@ body {
 
 /* ===== v28：背题卡——章节路径面包屑 + 答案面的题目回显 ===== */
 .card-chapter {
-  font-size: 11px; color: var(--muted); margin-bottom: 8px;
-  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  font-size: 11px; color: var(--muted); margin-bottom: 8px; line-height: 1.5;
+  display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical;
+  overflow: hidden;
 }
 .card-stem-mini {
   font-size: 13px; color: var(--muted); line-height: 1.55;
   padding: 8px 10px; margin-bottom: 12px;
   background: var(--seg-bg); border-radius: 8px;
   max-height: 30vh; overflow-y: auto;
+}
+
+/* ===== v29：适配修复 ===== */
+/* 等宽按钮行：上一题/跳过、BGM 添加/删除 这类成对按钮 */
+.eq-row { display: flex; gap: 10px; }
+.eq-row > button { flex: 1; min-width: 0; }
+/* 设置弹层里的下拉：v28 BGM 曲目下拉在 .modal-card（非 .plan-card）里没吃到任何样式，原生渲染错位 */
+.modal-card select {
+  width: 100%; padding: 9px 10px; border: 1px solid var(--line); border-radius: 10px;
+  background: var(--surface); color: var(--text); font-size: 16px; margin-top: 8px;
 }

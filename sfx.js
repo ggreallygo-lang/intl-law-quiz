@@ -11,6 +11,9 @@
  *   - 第四组「怀旧」包：早期 QQ 梗系列——翻卡=游戏大厅切桌「刷刷刷」，答对=「滴滴」，
  *     答错=系统消息「咳咳」，完成=好友上线「咚咚」敲门。走 pack.synth 自定义合成，
  *     其余三包仍是参数化 tone/noise 老路径
+ * v29（2026-09-14）：
+ *   - 音量三档：轻 0.6 / 标准 1 / 响 1.6（localStorage 'sfx-vol'）——手机外放听合成音
+ *     偏轻是物理现实，把响度交给用户自己拉，比盲调合成参数可靠
  *
  * 工程约束不变：
  *   - AudioContext 懒创建，首次手势 warm()（iOS 自动播放策略）
@@ -77,6 +80,8 @@
   var _pack = readKey('sfx-pack', 'crisp');
   if (!PACKS[_pack]) _pack = 'crisp';
   var _vibe = readKey('vibe-off', '0') !== '1';
+  var VOL_LEVELS = { '0.6': 0.6, '1': 1, '1.6': 1.6 };
+  var _volMul = VOL_LEVELS[readKey('sfx-vol', '1')] || 1;
 
   var ctx = null;
   function ac() {
@@ -100,7 +105,7 @@
       osc.type = (opts && opts.type) || p.wave;
       osc.frequency.setValueAtTime(freq, t);
       if (opts && opts.slideTo) osc.frequency.exponentialRampToValueAtTime(opts.slideTo, t + dur);
-      var vol = ((opts && opts.gain != null) ? opts.gain : 0.06) * p.vol;
+      var vol = ((opts && opts.gain != null) ? opts.gain : 0.06) * p.vol * _volMul;
       g.gain.setValueAtTime(0.0001, t);          // 近零起坡，避免爆音
       g.gain.exponentialRampToValueAtTime(vol, t + 0.012);
       g.gain.exponentialRampToValueAtTime(0.0001, t + dur);
@@ -128,7 +133,7 @@
       bp.frequency.exponentialRampToValueAtTime(to || p.flip[1], t + dur);
       var g = c.createGain();
       g.gain.setValueAtTime(0.0001, t);
-      g.gain.exponentialRampToValueAtTime(gain * p.vol, t + dur * 0.3);
+      g.gain.exponentialRampToValueAtTime(gain * p.vol * _volMul, t + dur * 0.3);
       g.gain.exponentialRampToValueAtTime(0.0001, t + dur);
       src.connect(bp); bp.connect(g); g.connect(c.destination);
       src.start(t); src.stop(t + dur + 0.02);
@@ -188,6 +193,13 @@
     /** 音效包清单（设置界面渲染用）：[{id,label}] */
     packs: function () {
       return Object.keys(PACKS).map(function (k) { return { id: k, label: PACKS[k].label }; });
+    },
+    /** 音量档位（v29）：返回 '0.6' | '1' | '1.6' */
+    getVol: function () { return String(_volMul); },
+    setVol: function (v) {
+      _volMul = VOL_LEVELS[String(v)] || 1;
+      writeKey('sfx-vol', String(_volMul));
+      return String(_volMul);
     },
     vibeSupported: function () {
       return (typeof navigator !== 'undefined') && !!navigator.vibrate;

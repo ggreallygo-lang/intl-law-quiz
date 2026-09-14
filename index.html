@@ -171,6 +171,12 @@
           <button data-v="1">开</button><button data-v="0">关</button>
         </div>
       </div>
+      <!-- v29：音量三档——手机外放听合成音偏轻，响度交给用户 -->
+      <div class="field"><label>音量</label>
+        <div class="seg" id="volSeg">
+          <button data-v="0.6">轻</button><button data-v="1">标准</button><button data-v="1.6">响</button>
+        </div>
+      </div>
       <div class="field"><label>音效包（切换即试听）</label>
         <div class="seg" id="packSeg">
           <button data-v="crisp">清脆</button><button data-v="soft">柔和</button><button data-v="wood">木质</button><button data-v="retro">怀旧</button>
@@ -186,10 +192,10 @@
         <div class="seg" id="bgmOnSeg">
           <button data-v="1">开</button><button data-v="0">关</button>
         </div>
-        <div class="plan-row" style="margin-top:8px">
-          <select id="bgmTrack"></select>
-          <button class="btn secondary" id="bgmAdd" style="flex:none">＋ 添加</button>
-          <button class="btn secondary hidden" id="bgmDel" style="flex:none">删</button>
+        <select id="bgmTrack"></select>
+        <div class="eq-row" style="margin-top:8px">
+          <button class="btn secondary" id="bgmAdd">＋ 添加本地音乐</button>
+          <button class="btn secondary hidden" id="bgmDel">删</button>
         </div>
         <input type="file" id="bgmFile" accept="audio/*" class="hidden">
         <div class="muted" style="font-size:12px;margin-top:4px">支持 mp3 / m4a / ogg / wav，存在本机不联网</div>

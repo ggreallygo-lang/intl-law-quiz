@@ -898,7 +898,7 @@
       `<div class="flip-hint" id="flipHint">点击卡片或下方按钮翻面看答案</div>` +
       `<button class="btn" id="flipBtn" style="margin-top:14px">显示答案</button>` +
       // v28：上一题（回看）/ 跳过（不评分、按原记忆曲线明天再来）
-      `<div class="btn-row" style="margin-top:10px">` +
+      `<div class="eq-row" style="margin-top:10px">` +
         `<button class="btn secondary" id="memPrev"${mem.i === 0 ? ' disabled' : ''}>‹ 上一题</button>` +
         `<button class="btn secondary" id="memSkip">跳过 ›</button>` +
       `</div>` +
@@ -1026,7 +1026,7 @@
       `<div class="progress-bar"><span style="width:${(prac.i / total) * 100}%"></span></div></div>` +
       `<div class="study-body slide-in">${body}</div>` +
       `<div id="pracFeedback"></div>` +
-      `<div id="pracNav" class="btn-row" style="margin-top:14px">` +
+      `<div id="pracNav" class="eq-row" style="margin-top:14px">` +
         `<button class="btn secondary" id="prevQBtn"${prac.i === 0 ? ' disabled' : ''}>‹ 上一题</button>` +
         `<button class="btn secondary" id="skipBtn">跳过 ›</button>` +
       `</div>` +
@@ -1931,6 +1931,7 @@
     function openSfxModal() {
       const setSeg = (seg, on) => seg.querySelectorAll('button').forEach(b => b.classList.toggle('on', b.dataset.v === on));
       setSeg($('#sfxOnSeg'), SFX.enabled() ? '1' : '0');
+      setSeg($('#volSeg'), SFX.getVol());           // v29：音量档位
       setSeg($('#packSeg'), SFX.getPack());
       const vibeOk = SFX.vibeSupported();
       $('#vibeField').classList.toggle('hidden', !vibeOk);
@@ -1956,6 +1957,12 @@
       SFX.setPack(b.dataset.v);
       $('#packSeg').querySelectorAll('button').forEach(x => x.classList.toggle('on', x === b));
       SFX.right();                          // 换包即试听
+    });
+    // v29：音量三档，切换即试听（响不响当场可感）
+    $('#volSeg').querySelectorAll('button').forEach(b => b.onclick = () => {
+      SFX.setVol(b.dataset.v);
+      $('#volSeg').querySelectorAll('button').forEach(x => x.classList.toggle('on', x === b));
+      SFX.right();
     });
     $('#vibeSeg').querySelectorAll('button').forEach(b => b.onclick = () => {
       SFX.setVibe(b.dataset.v === '1');
