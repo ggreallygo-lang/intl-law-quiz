@@ -150,7 +150,13 @@
   }
 
   // ---------- F2 统计面板 ----------
-  // 首页顶部卡：累计做题数 + 累计时长 + 连续打卡（用户铁律三件套）
+  // v24：每日目标（localStorage，默认 50；点今日行可改）
+  const GOAL_KEY = 'daily-goal';
+  function getDailyGoal() {
+    const n = parseInt(localStorage.getItem(GOAL_KEY) || '50', 10);
+    return (n > 0 && n <= 1000) ? n : 50;
+  }
+  // 首页顶部卡：累计 + 今日目标进度条
   async function renderHomeStats() {
     const box = $('#homeStats'); if (!box) return;
     const sess = (await DB.listSessions()) || [];
@@ -159,8 +165,16 @@
     const h = Math.floor(t.ms / 3600000);
     const m = Math.round((t.ms % 3600000) / 60000);
     const dur = h > 0 ? `${h} 小时 ${m} 分` : (m > 0 ? `${m} 分钟` : `${Math.round(t.ms / 1000)} 秒`);
+    const today = (DB.dailyCounts(sess, 1)[0] || {}).count || 0;
+    const goal = getDailyGoal();
+    const pct = Math.min(100, Math.round(today / goal * 100));
     box.innerHTML =
       `<div class="hs-main">📊 累计做题 <b>${t.count}</b> 题 · 累计 ${dur} · 连续打卡 <b>${streak}</b> 天</div>` +
+      `<div class="hs-today" id="todayRow" title="点此修改每日目标">` +
+      `今日 <b>${today}</b> / ${goal} 题` +
+      `<span class="hs-goal-bar"><span style="width:${pct}%"></span></span>` +
+      (today >= goal && goal > 0 ? '<span>🎉</span>' : '') +
+      `</div>` +
       (t.count ? '' : `<div class="hs-hint">做一次题就开始计数（刷题 / 背题 / 考试都算）</div>`);
     box.classList.remove('hidden');
   }
@@ -186,6 +200,18 @@
     await DB.deleteBank(id); toast('已删除'); renderHome();
   }
 
+  // v24：背题卡上的「今日到期 N 张」——SM-2 语义与 startMemorize 完全一致
+  // （没见过的卡也算到期：新卡当天就该学）
+  async function refreshMemDue() {
+    const el = $('#memDueHint');
+    if (!el || !S.bank) return;
+    const ps = await DB.listProgress(S.bank.id);
+    const map = {}; ps.forEach(p => { map[p.qid] = p; });
+    const now = Date.now();
+    const n = S.pool.filter(q => !map[q.id] || (map[q.id].due || 0) <= now).length;
+    el.textContent = n ? `📌 今日到期 ${n} 张` : '';
+  }
+
   // ---------- 题库详情（统计 + 目录 + 题目列表） ----------
   async function openBank(id) {
     const bank = await DB.getBank(id);
@@ -200,11 +226,13 @@
     renderBankSwitch(bank.id);
     $('#rangeBar').classList.add('hidden');
     clearModeSel();
+    refreshResumeBar();               // v23：上次没做完的会话给个「继续」入口
+    safe(refreshMemDue(), '加载到期数失败');   // v24：背题卡「今日到期 N 张」
     await renderBankStats();
     safe(renderBankChart(), '加载每日统计失败');
     await safe(refreshWrongCount(), '加载错题数失败');
     safe(refreshWeakEntry(), '加载弱项统计失败');
-    renderOutlineTree();
+    safe(renderOutlineTree(), '加载目录失败');
     renderQuestionList('');
     // 模式卡片 -> 先选范围
     document.querySelectorAll('#view-bank .mode-card').forEach(c => {
@@ -258,29 +286,38 @@
   }
 
   // 目录树：第 3 层及以下默认收起，点箭头折叠，点标题筛选
-  function outlineHtml(nodes, depth) {
+  // v25：掌握度色点 —— 章节累计正确率 ≥80% 绿 / 50-79% 黄 / <50% 红；累计作答 <3 次不上色
+  function masteryDot(m) {
+    if (!m || m.acc == null) return '';
+    const pct = Math.round(m.acc * 100);
+    const cls = m.acc >= 0.8 ? 'ok' : (m.acc >= 0.5 ? 'mid' : 'bad');
+    return `<span class="ol-dot ol-dot-${cls}" title="正确率 ${pct}%（累计 ${m.attempts} 次）"></span>`;
+  }
+  function outlineHtml(nodes, depth, mastery) {
     return (nodes || []).map(n => {
       const hasKids = !!(n.children && n.children.length);
       const collapsed = depth >= 2 ? ' collapsed' : '';
       return `<div class="ol-node${collapsed}">` +
         `<div class="ol-row" data-id="${esc(n.id)}" style="padding-left:${depth * 14}px">` +
         `<span class="ol-toggle">${hasKids ? '▸' : ''}</span>` +
-        `<span class="ol-title">${esc(n.title)}</span>` +
+        `<span class="ol-title">${esc(n.title)}${masteryDot(mastery && mastery[n.id])}</span>` +
         `<span class="ol-count">${n.total || 0} 题</span>` +
         `</div>` +
-        (hasKids ? `<div class="ol-children">${outlineHtml(n.children, depth + 1)}</div>` : '') +
+        (hasKids ? `<div class="ol-children">${outlineHtml(n.children, depth + 1, mastery)}</div>` : '') +
         `</div>`;
     }).join('');
   }
 
-  function renderOutlineTree() {
+  async function renderOutlineTree() {
     const box = $('#outlineTree');
     if (!S.outline || !S.outline.length) {
       box.innerHTML = '<div class="empty">这份笔记没有标题层级，题目已归入「未分组」</div>';
       $('#outlineHint').textContent = '';
       return;
     }
-    box.innerHTML = outlineHtml(S.outline, 0);
+    const progs = await DB.listProgress(S.bank.id);
+    const mastery = DB.outlineMastery(S.outline, S.questions, progs);
+    box.innerHTML = outlineHtml(S.outline, 0, mastery);
     box.querySelectorAll('.ol-row').forEach(row => {
       const node = row.parentElement;
       row.querySelector('.ol-toggle').onclick = (e) => {
@@ -324,13 +361,86 @@
         : `<div class="qcard-opts">${(q.options || []).map(o => `<span>${o.key}. ${esc(o.text)}</span>`).join('')}</div>`;
     }
     return `<div class="qcard"${stagger}>` +
-      `<div class="qcard-top"><span class="qtag">${TYPE_LABEL[q.type] || q.type}</span><span class="qcard-path">${esc(path)}</span></div>` +
+      `<div class="qcard-top"><span class="qtag">${TYPE_LABEL[q.type] || q.type}</span><span class="qcard-path">${esc(path)}</span>` +
+      `<button class="qcard-edit" type="button" data-edit="${esc(q.id)}" title="编辑此题">✏️</button></div>` +
       body +
       `<button class="qcard-reveal">显示答案</button>` +
       `<div class="qcard-answer hidden">` +
       `<div class="qcard-ans">答案：${esc(answerText(q))}</div>` +
       (q.explanation ? `<div class="qcard-exp">解析：${esc(q.explanation)}</div>` : '') +
       `</div></div>`;
+  }
+
+  // v25：题目编辑——OCR 错的答案/解析可以直接在 App 里修，不用重导题库
+  function openEditQuestion(qid) {
+    const q = S.questions.find(x => x.id === qid) || (wb && wb.qmap && wb.qmap[qid]);
+    if (!q) return;
+    const isTerm = q.type === 'term';
+    let answerHtml = '';
+    if (q.type === 'single' || q.type === 'multiple') {
+      answerHtml = `<div class="field"><label>答案（多选连写，如 ABD）</label>
+        <input type="text" id="editAns" maxlength="8" autocomplete="off" value="${esc(Scoring.answerKeys(q).join(''))}" /></div>`;
+    } else if (q.type === 'judge') {
+      answerHtml = `<div class="field"><label>答案</label><div class="seg" id="editJudge">
+        <button type="button" data-v="1"${q.answer ? ' class="on"' : ''}>对</button>
+        <button type="button" data-v="0"${!q.answer ? ' class="on"' : ''}>错</button></div></div>`;
+    } else if (isTerm) {
+      answerHtml = `<div class="field"><label>词条</label><input type="text" id="editTerm" value="${esc(q.term || '')}" /></div>` +
+        `<div class="field"><label>定义（答案）</label><textarea id="editDef" rows="5">${esc(q.definition || '')}</textarea></div>`;
+    } else {
+      answerHtml = `<div class="field"><label>答案</label><textarea id="editAns" rows="4">${esc(q.answer == null ? '' : q.answer)}</textarea></div>`;
+    }
+    $('#editBody').innerHTML =
+      `<div class="muted" style="font-size:12px;margin-bottom:10px">${TYPE_LABEL[q.type] || q.type} · ${esc((q.chapterPath || []).join(' › ') || q.chapter || '未分组')}</div>` +
+      `<div class="field"><label>题干</label><textarea id="editStem" rows="4">${esc(q.stem || '')}</textarea></div>` +
+      answerHtml +
+      `<div class="field"><label>解析</label><textarea id="editExp" rows="3">${esc(q.explanation || '')}</textarea></div>`;
+    let judgeAns = q.answer;
+    if (q.type === 'judge') {
+      $('#editJudge').querySelectorAll('button').forEach(b => b.onclick = () => {
+        $('#editJudge').querySelectorAll('button').forEach(x => x.classList.remove('on'));
+        b.classList.add('on');
+        judgeAns = b.dataset.v === '1';
+      });
+    }
+    $('#editModal').classList.remove('hidden');
+    $('#editSave').onclick = () => safe((async () => {
+      const patch = { id: q.id, explanation: $('#editExp').value };
+      if (isTerm) {
+        patch.term = $('#editTerm').value.trim() || q.term;
+        patch.definition = $('#editDef').value;
+        patch.stem = $('#editStem').value.trim() || q.stem;
+      } else {
+        patch.stem = $('#editStem').value.trim() || q.stem;
+      }
+      if (q.type === 'single' || q.type === 'multiple') {
+        // 字母清洗 + 去重 + 排序，防手滑输入非法答案
+        const keys = ($('#editAns').value || '').toUpperCase().replace(/[^A-H]/g, '')
+          .split('').filter((c, i, a) => a.indexOf(c) === i).sort();
+        if (!keys.length) { toast('答案至少要有一个字母（A-H）'); return; }
+        patch.answer = keys;
+      } else if (q.type === 'judge') {
+        patch.answer = judgeAns;
+      } else if (!isTerm) {
+        patch.answer = $('#editAns').value;
+      }
+      const ok = await DB.updateQuestion(patch);
+      if (!ok) { toast('这道题已不在题库里（可能被重新导入过）'); return; }
+      Object.assign(q, patch);              // S.questions 里就是同一个对象，原地更新
+      $('#editModal').classList.add('hidden');
+      toast('已保存');
+      SFX.neutral();
+      if (curView === 'wrong') safe(openWrongBook(), '刷新错题本失败');
+      else if (curView === 'bank' && S.bank) renderQuestionList($('#qSearch').value);
+    })(), '保存失败');
+  }
+
+  // 委托绑定：卡片是 innerHTML 反复重渲的，事件委托到 document 上一次就够
+  function bindEditButtons() {
+    document.addEventListener('click', (e) => {
+      const b = e.target.closest('.qcard-edit');
+      if (b) openEditQuestion(b.dataset.edit);
+    });
   }
 
   // 展开/收起答案：题目列表与错题本列表共用
@@ -388,7 +498,7 @@
     const progs = await DB.listProgress(S.bank.id);
     const qmap = {};
     S.questions.forEach(q => { qmap[q.id] = q; });
-    wb = { progs: progs, qmap: qmap, type: null, chapter: null };
+    wb = { progs: progs, qmap: qmap, type: null, chapter: null, graduated: false };
     setBack('bank', '‹ 题库');
     $('#title').textContent = '错题本';
     renderWrongBook();
@@ -399,7 +509,8 @@
     return DB.pickWrong(wb.progs, {
       questionMap: wb.qmap,
       types: wb.type ? [wb.type] : null,
-      chapter: wb.chapter
+      chapter: wb.chapter,
+      graduated: wb.graduated
     });
   }
 
@@ -412,11 +523,13 @@
 
   function renderWrongBook() {
     const view = $('#view-wrong');
-    const all = DB.pickWrong(wb.progs, { questionMap: wb.qmap });
+    const active = DB.pickWrong(wb.progs, { questionMap: wb.qmap });
+    const grad = DB.pickWrong(wb.progs, { questionMap: wb.qmap, graduated: true });
 
-    // 筛选项从「实际有错题的范围」里长出来，避免列出一堆空章节
+    // 筛选项从「当前视图实际有错题的范围」里长出来，避免列出一堆空章节
+    const base = wb.graduated ? grad : active;
     const typeCnt = {}, chapCnt = {};
-    all.forEach(it => {
+    base.forEach(it => {
       const q = it.question; if (!q) return;
       typeCnt[q.type] = (typeCnt[q.type] || 0) + 1;
       const c = DB.topChapter(q);
@@ -426,49 +539,84 @@
     if (wb.type && !typeCnt[wb.type]) wb.type = null;
     if (wb.chapter && !chapCnt[wb.chapter]) wb.chapter = null;
     const items = wbFiltered();
-    const typePairs = [['', '全部题型', all.length]].concat(
+    const typePairs = [['', '全部题型', base.length]].concat(
       Object.keys(typeCnt).map(t => [t, TYPE_LABEL[t] || t, typeCnt[t]]));
-    const chapPairs = [['', '全部章节', all.length]].concat(
+    const chapPairs = [['', '全部章节', base.length]].concat(
       Object.keys(chapCnt).map(c => [c, c, chapCnt[c]]));
 
     const sumWrong = items.reduce((n, it) => n + it.wrong, 0);
     let html = `<div class="bank-summary">` +
-      `<div class="sum-main"><b>${items.length}</b> 道错题 · 累计错 ${sumWrong} 次</div>` +
-      `<div class="sum-sub">按「错误次数 → 最近错误时间」排序；重刷答对不会自动移出，可单题点「移除」</div>` +
+      (wb.graduated
+        ? `<div class="sum-main"><b>${items.length}</b> 道已毕业 🎓 · 连续答对 ${DB.wrongGradN()} 次通过</div>` +
+          `<div class="sum-sub">毕业不影响历史统计；想再练点「重新练习」收回活跃清单</div>`
+        : `<div class="sum-main"><b>${items.length}</b> 道错题进行中${grad.length ? ` · 已毕业 ${grad.length} 道 🎓` : ''}</div>` +
+          `<div class="sum-sub">连续答对 ${DB.wrongGradN()} 次自动毕业；按「错误次数 → 最近错误时间」排序</div>`) +
       `</div>`;
-    if (typePairs.length > 2) html += wbChips('type', typePairs, wb.type);
-    if (chapPairs.length > 2) html += wbChips('chapter', chapPairs, wb.chapter);
-    html += `<div class="wb-actions">` +
-      `<button class="btn" id="wbPractice"${items.length ? '' : ' disabled'}>✍️ 刷错题</button>` +
-      `<button class="btn secondary" id="wbMemorize"${items.length ? '' : ' disabled'}>🃏 背错题</button>` +
+    // v24：进行中 / 已毕业 视图切换
+    html += `<div class="wb-filters">` +
+      `<button class="wb-chip${!wb.graduated ? ' on' : ''}" data-kind="view" data-v="">进行中 ${active.length}</button>` +
+      `<button class="wb-chip${wb.graduated ? ' on' : ''}" data-kind="view" data-v="grad">已毕业 ${grad.length}</button>` +
       `</div>`;
+    if (!wb.graduated) {
+      if (typePairs.length > 2) html += wbChips('type', typePairs, wb.type);
+      if (chapPairs.length > 2) html += wbChips('chapter', chapPairs, wb.chapter);
+      html += `<div class="wb-actions">` +
+        `<button class="btn" id="wbPractice"${items.length ? '' : ' disabled'}>✍️ 刷错题</button>` +
+        `<button class="btn secondary" id="wbMemorize"${items.length ? '' : ' disabled'}>🃏 背错题</button>` +
+        `</div>`;
+    }
     html += items.length
       ? `<div class="qlist">` + items.map(it =>
         `<div class="wb-item" data-qid="${esc(it.qid)}">` +
-        `<div class="wb-head"><span class="wb-badge">错 ${it.wrong} 次${it.right ? ' · 对 ' + it.right + ' 次' : ''}</span>` +
-        `<button class="wb-remove" type="button">移除</button></div>` +
+        `<div class="wb-head">` +
+        (wb.graduated
+          ? `<span class="wb-badge wb-badge-grad">🎓 已毕业</span><button class="wb-remove wb-restore" type="button">重新练习</button>`
+          : `<span class="wb-badge">错 ${it.wrong} 次${it.right ? ' · 对 ' + it.right + ' 次' : ''}</span>` +
+            `<button class="wb-remove" type="button">移除</button>`) +
+        `</div>` +
         questionCardHtml(it.question) + `</div>`).join('') + `</div>`
-      : `<div class="empty">${all.length ? '这个筛选条件下没有错题' : '还没有错题，去刷题或考试攒一攒 👆'}</div>`;
+      : `<div class="empty">${wb.graduated ? '还没有毕业的错题——连续答对 ' + DB.wrongGradN() + ' 次就会出现在这里 🎓'
+          : (base.length ? '这个筛选条件下没有错题' : '还没有错题，去刷题或考试攒一攒 👆')}</div>`;
     view.innerHTML = html;
 
     view.querySelectorAll('.wb-chip').forEach(b => {
       b.onclick = () => {
-        const v = b.dataset.v || null;
-        if (b.dataset.kind === 'type') wb.type = (wb.type === v) ? null : v;
-        else wb.chapter = (wb.chapter === v) ? null : v;
+        if (b.dataset.kind === 'view') {
+          if ((b.dataset.v === 'grad') === wb.graduated) return;
+          wb.graduated = b.dataset.v === 'grad';
+          wb.type = null; wb.chapter = null;      // 视图切换时清掉题型/章节筛选
+        } else if (b.dataset.kind === 'type') {
+          const v = b.dataset.v || null;
+          wb.type = (wb.type === v) ? null : v;
+        } else {
+          const v = b.dataset.v || null;
+          wb.chapter = (wb.chapter === v) ? null : v;
+        }
         renderWrongBook();
       };
     });
     bindReveal(view);
     view.querySelectorAll('.wb-remove').forEach(b => {
-      b.onclick = () => safe(removeWrong(b.closest('.wb-item').dataset.qid), '移除失败');
+      const qid = b.closest('.wb-item').dataset.qid;
+      b.onclick = () => wb.graduated
+        ? safe(restoreWrongItem(qid), '收回失败')
+        : safe(removeWrong(qid), '移除失败');
     });
-    if (items.length) {
+    if (!wb.graduated && items.length) {
       const list = items.map(it => it.question);
       $('#wbPractice').onclick = () => startMode('practice', list, { title: '刷错题' });
       // 背错题不做 SM2 due 过滤：错题就是要全部过一遍
       $('#wbMemorize').onclick = () => startMode('memorize', list, { title: '背错题', all: true });
     }
+  }
+
+  async function restoreWrongItem(qid) {
+    const ok = await DB.restoreWrong(qid, S.bank.id);
+    if (!ok) { toast('这道题的进度记录不在了'); return; }
+    toast('已收回活跃清单，继续加油');
+    wb.progs = await DB.listProgress(S.bank.id);
+    renderWrongBook();
+    await safe(refreshWrongCount(), '刷新错题数失败');
   }
 
   async function removeWrong(qid) {
@@ -570,7 +718,7 @@
     // opts.all：错题本进来时不按记忆曲线过滤，错的全部过一遍
     let due = opts.all ? S.pool.slice() : S.pool.filter(q => !map[q.id] || map[q.id].due <= now);
     if (!due.length) due = S.pool.slice(); // 全部复习完 -> 全部过一遍
-    mem = { list: shuffle(due), i: 0, map, startAt: Date.now(), timer: null };
+    mem = { list: shuffle(due), i: 0, map, startAt: Date.now(), timer: null, title: opts.title || '背题' };
     setBack('bank', '‹ 题库');
     $('#title').textContent = opts.title || '背题';
     renderMemorize();
@@ -581,6 +729,7 @@
     if (mem.i >= mem.list.length) {
       const used = fmtElapsed(Date.now() - (mem.startAt || Date.now()));
       stopTimer(mem);                     // v21：本轮计时停止
+      clearResume();                      // v23：背完清档
       SFX.done();                         // v22：背完收尾音
       view.innerHTML = `<div class="empty"><div style="font-size:40px">🎉</div>本轮背完啦！<br><span class="muted">按记忆曲线，该复习的都过了一遍 · 用时 ${used}</span></div>
         <button class="btn" onclick="location.reload()">返回</button>`;
@@ -588,6 +737,7 @@
     }
     const q = mem.list[mem.i];
     const total = mem.list.length;
+    saveResume('memorize', mem);     // v23：每卡存档，退出可续
     let front = '', back = '';
     if (q.type === 'term') {
       front = `<div class="tag">名词解释</div><div class="stem">${esc(q.term)}</div>`;
@@ -677,6 +827,7 @@
     const q = prac.list[prac.i];
     const total = prac.list.length;
     prac.renderedAt = Date.now();   // F2：展示→作答的耗时起点
+    saveResume('practice', prac);   // v23：每题存档，退出可续
     let body = '';
     // 自评题：名词解释 / 简答 / 答案过长的填空 —— 看答案后自己判断会/不会
     if (Scoring.isSelfAssess(q)) {
@@ -791,10 +942,14 @@
     await safe((async () => {
       let p = await DB.getProgress(q.id) || { qid: q.id, bankId: S.bank.id, ease: 2.5, interval: 0, reps: 0, due: 0, lapses: 0 };
       p.practice = p.practice || { correct: 0, wrong: 0 };
-      if (right) p.practice.correct++;
+      if (right) {
+        p.practice.correct++;
+        p.wrongStreak = (p.wrongStreak || 0) + 1;   // v24：连续答对，攒够毕业
+      }
       else {
         p.practice.wrong++;
         p.lapses = (p.lapses || 0) + 1;
+        p.wrongStreak = 0;                           // v24：答错即断连续
         p.lastWrong = Date.now();       // 错题本排序用
         p.wrongDismissed = false;       // 曾被移除的再答错要收回来
       }
@@ -810,6 +965,7 @@
     const used = fmtElapsed(usedMs);
     const avg = total ? Math.max(1, Math.round(usedMs / 1000 / total)) : 0;
     stopTimer(prac);
+    clearResume();                         // v23：做完（含复习错题收尾）就清档
     SFX.done();                            // v22：刷完收尾音
     const view = $('#view-study');
     view.innerHTML =
@@ -1324,6 +1480,74 @@
     }
   }
 
+  // ---------- v23：断点续刷 ----------
+  // 背题/刷题每切一题就把会话快照写 localStorage；退出 App/关页面后再进题库，
+  // 顶部横幅「继续上次 · 第 N/M 题」一键接着做。考试有时限语义，不做续刷。
+  const RESUME_KEY = 'resume-session';
+  function saveResume(kind, holder) {
+    try {
+      localStorage.setItem(RESUME_KEY, JSON.stringify({
+        kind: kind, bankId: S.bank.id, title: holder.title || '',
+        qids: holder.list.map(q => q.id), i: holder.i,
+        correct: holder.correct || 0, wrongIds: holder.wrongIds || [],
+        savedAt: Date.now()
+      }));
+    } catch (e) {}                       // 存不进（隐私模式/满了）就放弃续刷，不影响做题
+  }
+  function clearResume() { try { localStorage.removeItem(RESUME_KEY); } catch (e) {} }
+  function getResume(bankId) {
+    try {
+      const r = JSON.parse(localStorage.getItem(RESUME_KEY) || 'null');
+      if (r && r.bankId === bankId && Array.isArray(r.qids) && r.qids.length && r.i >= 0 && r.i < r.qids.length) return r;
+    } catch (e) {}
+    return null;
+  }
+  function timeAgo(ts) {
+    const m = Math.floor((Date.now() - ts) / 60000);
+    if (m < 1) return '刚刚';
+    if (m < 60) return m + ' 分钟前';
+    if (m < 1440) return Math.floor(m / 60) + ' 小时前';
+    return Math.floor(m / 1440) + ' 天前';
+  }
+  function refreshResumeBar() {
+    const bar = $('#resumeBar');
+    if (!bar) return;
+    const r = getResume(S.bank && S.bank.id);
+    if (!r) { bar.classList.add('hidden'); return; }
+    const label = (r.kind === 'memorize' ? '🃏 背题' : '✍️ 刷题') +
+      (r.title && r.title !== '背题' && r.title !== '刷题' ? '「' + r.title + '」' : '');
+    $('#resumeDesc').textContent = `${label} 第 ${r.i + 1}/${r.qids.length} 题（${timeAgo(r.savedAt)}）`;
+    bar.classList.remove('hidden');
+  }
+  function resumeSession() {
+    const r = getResume(S.bank.id);
+    if (!r) { refreshResumeBar(); return; }
+    const qmap = {}; S.questions.forEach(q => qmap[q.id] = q);
+    const list = r.qids.map(id => qmap[id]).filter(Boolean);
+    if (!list.length) { clearResume(); refreshResumeBar(); return; }
+    if (r.kind === 'memorize') {
+      stopTimer(mem);
+      (async () => {
+        const progs = await DB.listProgress(S.bank.id);
+        const map = {}; progs.forEach(p => map[p.qid] = p);
+        mem = { list: list, i: Math.min(r.i, list.length - 1), map, startAt: Date.now(), timer: null, title: r.title || '背题' };
+        S.pool = list;
+        setBack('bank', '‹ 题库');
+        $('#title').textContent = mem.title;
+        renderMemorize();
+      })();
+    } else {
+      stopTimer(prac);
+      prac = { list: list, i: Math.min(r.i, list.length - 1), wrong: [], correct: r.correct || 0,
+               wrongIds: r.wrongIds || [], title: r.title || '刷题', startAt: Date.now(), timer: null };
+      S.pool = list;
+      setBack('bank', '‹ 题库');
+      $('#title').textContent = prac.title;
+      renderPractice();
+    }
+    toast('已恢复到第 ' + (Math.min(r.i, list.length - 1) + 1) + ' 题');
+  }
+
   // ---------- v20：恢复备份弹层 ----------
   let pendingDump = null;
   function closeRestoreModal() {
@@ -1439,16 +1663,74 @@
       updateRangeHint();
     });
     $('#rangeCancel').onclick = () => { $('#rangeBar').classList.add('hidden'); clearModeSel(); };
-    // v22：音效开关（开关状态由 sfx.js 自己记 localStorage）
+    // v22/v23：音效设置弹层（开关 / 三组音效包 / 震动），🔊 按钮进入
     const sfxBtn = $('#sfxBtn');
     const syncSfxBtn = () => { sfxBtn.textContent = SFX.enabled() ? '🔊' : '🔇'; };
     syncSfxBtn();
-    sfxBtn.onclick = () => {
-      SFX.setEnabled(!SFX.enabled());
+    sfxBtn.onclick = openSfxModal;
+    function openSfxModal() {
+      const setSeg = (seg, on) => seg.querySelectorAll('button').forEach(b => b.classList.toggle('on', b.dataset.v === on));
+      setSeg($('#sfxOnSeg'), SFX.enabled() ? '1' : '0');
+      setSeg($('#packSeg'), SFX.getPack());
+      const vibeOk = SFX.vibeSupported();
+      $('#vibeField').classList.toggle('hidden', !vibeOk);
+      if (vibeOk) setSeg($('#vibeSeg'), SFX.getVibe() ? '1' : '0');
+      $('#sfxModal').classList.remove('hidden');
+    }
+    $('#sfxOnSeg').querySelectorAll('button').forEach(b => b.onclick = () => {
+      SFX.setEnabled(b.dataset.v === '1');
       syncSfxBtn();
-      if (SFX.enabled()) SFX.right();      // 开的时候响一声给自己听
-      toast(SFX.enabled() ? '音效已开' : '音效已关');
-    };
+      if (SFX.enabled()) SFX.right();      // 开启即给个样品
+    });
+    $('#packSeg').querySelectorAll('button').forEach(b => b.onclick = () => {
+      SFX.setPack(b.dataset.v);
+      $('#packSeg').querySelectorAll('button').forEach(x => x.classList.toggle('on', x === b));
+      SFX.right();                          // 换包即试听
+    });
+    $('#vibeSeg').querySelectorAll('button').forEach(b => b.onclick = () => {
+      SFX.setVibe(b.dataset.v === '1');
+      $('#vibeSeg').querySelectorAll('button').forEach(x => x.classList.toggle('on', x === b));
+      if (SFX.getVibe()) SFX.done();        // 震动开关试一下收尾震感
+    });
+    $('#sfxModalClose').onclick = () => $('#sfxModal').classList.add('hidden');
+    $('#sfxModal').onclick = (e) => { if (e.target === $('#sfxModal')) $('#sfxModal').classList.add('hidden'); };
+    // v24：每日目标 —— 点首页「今日 x/y 题」行弹设置（renderHomeStats 重渲，用委托）
+    $('#homeStats').addEventListener('click', (e) => {
+      if (e.target.closest('#todayRow')) {
+        $('#goalSeg').querySelectorAll('button').forEach(b =>
+          b.classList.toggle('on', +b.dataset.v === getDailyGoal()));
+        $('#goalModal').classList.remove('hidden');
+      }
+    });
+    $('#goalSeg').querySelectorAll('button').forEach(b => b.onclick = () => {
+      localStorage.setItem(GOAL_KEY, String(+b.dataset.v));
+      $('#goalSeg').querySelectorAll('button').forEach(x => x.classList.toggle('on', x === b));
+      safe(renderHomeStats(), '刷新统计失败');
+    });
+    $('#goalModalClose').onclick = () => $('#goalModal').classList.add('hidden');
+    $('#goalModal').onclick = (e) => { if (e.target === $('#goalModal')) $('#goalModal').classList.add('hidden'); };
+    // v24：PWA 更新提示 —— 本项目 sw.js 自带 skipWaiting+claim：新版装好后立即接管本页，
+    // 但页面资源还是旧的。所以监听 controllerchange（接管信号）弹底部提示条，点「刷新」即用上
+    if ('serviceWorker' in navigator) {
+      const swc = navigator.serviceWorker;
+      const hadController = !!swc.controller;   // 首次安装（之前无 SW）不算「更新」，不弹
+      swc.addEventListener('controllerchange', () => {
+        if (hadController) $('#updateBar').classList.remove('hidden');
+      });
+      // 兜底：打开页面时新版已在 waiting（理论上不会发生，防御性保留）
+      swc.getRegistration().then((reg) => {
+        if (reg && reg.waiting && swc.controller) $('#updateBar').classList.remove('hidden');
+      }).catch(() => {});
+    }
+    $('#updateReload').onclick = () => location.reload();
+    $('#updateClose').onclick = () => $('#updateBar').classList.add('hidden');
+    // v25：题目编辑弹层（按钮走 document 级委托，见 bindEditButtons）
+    bindEditButtons();
+    $('#editCancel').onclick = () => $('#editModal').classList.add('hidden');
+    $('#editModal').onclick = (e) => { if (e.target === $('#editModal')) $('#editModal').classList.add('hidden'); };
+    // v23：断点续刷入口
+    $('#resumeGo').onclick = () => resumeSession();
+    $('#resumeDrop').onclick = () => { clearResume(); refreshResumeBar(); toast('已放弃上次的进度'); };
     // 深色
     // 状态栏/地址栏染色必须跟 data-theme 走，否则切到深色后顶部还留一条浅色
     const syncThemeColor = () => {

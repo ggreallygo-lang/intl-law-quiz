@@ -1,20 +1,17 @@
 /*
- * sfx.js — 轻量音效（Web Audio 实时合成，零素材、零依赖）
+ * sfx.js — 轻量音效 + 震动（Web Audio 实时合成，零素材、零依赖）
  *
- * v22（2026-09-14）：
- *   - 全部音效由振荡器/白噪声合成，不引入任何音频文件与外部库（守住零依赖红线）
- *   - AudioContext 懒创建：iOS 自动播放策略要求在手势里创建/恢复，
- *     所有调用点都在点击链路内；warm() 供首次手势时预热
- *   - 音量刻意压低（gain 0.04~0.10），是「反馈感」不是「打扰」；appbar 有 🔊 开关，记忆在 localStorage
- *   - 任何内部异常都吞掉：音效绝不允许把做题主流程搞挂
+ * v22（2026-09-14）：六种音效（flip/right/wrong/neutral/warn/done）+ 总开关。
+ * v23（2026-09-14）：
+ *   - 音效包：清脆（默认）/ 柔和 / 木质 三组音色，只改波形、频率组与音量系数，仍是纯合成
+ *   - 震动：navigator.vibrate（安卓/部分浏览器可用；iOS Safari 不支持——设置里照常可关，
+ *     不支持的设备上 UI 层会隐藏该选项）
+ *   - 偏好全部记 localStorage：sfx-off / sfx-pack / vibe-off
  *
- * 音色设计：
- *   flip    翻卡「刷刷」纸声 —— 白噪声 + 带通滤波向上扫频（背题翻面 / 切题共用）
- *   right   答对 —— E5→A5 轻快两连音（正弦，短包络）
- *   wrong   答错 —— 220→150Hz 三角波下落，低频短促
- *   neutral 自评「模糊」—— 中性单音轻点
- *   warn    考试最后 60 秒 —— 880Hz 两声提示（配 v14 的 timer-warn 变红）
- *   done    完成/交卷 —— C5→E5→G5 上行三连音
+ * 工程约束不变：
+ *   - AudioContext 懒创建，首次手势 warm()（iOS 自动播放策略）
+ *   - 任何内部异常都吞掉——音效/震动绝不允许把做题主流程搞挂
+ *   - 音量刻意压低，是「反馈感」不是「打扰」
  */
 (function (root, factory) {
   if (typeof module === 'object' && module.exports) module.exports = factory();
@@ -22,19 +19,39 @@
 })(typeof self !== 'undefined' ? self : this, function () {
   'use strict';
 
-  const KEY = 'sfx-off';
   function store() {
     try { return (typeof localStorage !== 'undefined') ? localStorage : null; } catch (e) { return null; }
   }
+  function readKey(k, dft) {
+    const s = store();
+    if (!s) return dft;
+    try { const v = s.getItem(k); return v == null ? dft : v; } catch (e) { return dft; }
+  }
+  function writeKey(k, v) {
+    const s = store();
+    if (s) { try { s.setItem(k, v); } catch (e) {} }
+  }
 
-  let _enabled = true;
-  const st0 = store();
-  if (st0) { try { _enabled = st0.getItem(KEY) !== '1'; } catch (e) {} }
+  // ---- 音效包定义：wave 正答波形 / wrongWave 错答波形 / 频率组 / flip 噪声扫频区间 / vol 音量系数 ----
+  var PACKS = {
+    crisp: { label: '清脆', wave: 'sine',     wrongWave: 'triangle', vol: 1,
+             right: [659, 880], wrong: [220, 150], done: [523, 659, 784], warn: 880, neutral: 440, flip: [900, 2600] },
+    soft:  { label: '柔和', wave: 'triangle', wrongWave: 'sine',     vol: 0.8,
+             right: [494, 587], wrong: [175, 131], done: [392, 494, 587], warn: 660, neutral: 330, flip: [400, 1400] },
+    wood:  { label: '木质', wave: 'square',   wrongWave: 'square',   vol: 0.5,
+             right: [988, 1319], wrong: [147, 110], done: [784, 988, 1319], warn: 1047, neutral: 494, flip: [700, 2000] }
+  };
+  function packOf(id) { return PACKS[id] || PACKS.crisp; }
 
-  let ctx = null;
+  var _enabled = readKey('sfx-off', '0') !== '1';
+  var _pack = readKey('sfx-pack', 'crisp');
+  if (!PACKS[_pack]) _pack = 'crisp';
+  var _vibe = readKey('vibe-off', '0') !== '1';
+
+  var ctx = null;
   function ac() {
     if (!ctx) {
-      const AC = (typeof window !== 'undefined') && (window.AudioContext || window.webkitAudioContext);
+      var AC = (typeof window !== 'undefined') && (window.AudioContext || window.webkitAudioContext);
       if (!AC) return null;                      // Node 单测 / 极老浏览器：静默跳过
       try { ctx = new AC(); } catch (e) { return null; }
     }
@@ -42,19 +59,19 @@
     return ctx;
   }
 
-  // 单音：freq 起始频率，dur 时长秒，opts: { type 波形, gain 音量, slideTo 滑向频率 }
   function tone(freq, dur, opts) {
-    const c = ac();
+    var c = ac();
     if (!c || !_enabled) return;
     try {
-      const t = c.currentTime;
-      const osc = c.createOscillator();
-      const g = c.createGain();
-      osc.type = (opts && opts.type) || 'sine';
+      var p = packOf(_pack);
+      var t = c.currentTime;
+      var osc = c.createOscillator();
+      var g = c.createGain();
+      osc.type = (opts && opts.type) || p.wave;
       osc.frequency.setValueAtTime(freq, t);
       if (opts && opts.slideTo) osc.frequency.exponentialRampToValueAtTime(opts.slideTo, t + dur);
-      const vol = (opts && opts.gain != null) ? opts.gain : 0.06;
-      g.gain.setValueAtTime(0.0001, t);          // 从近零起坡，避免「咔」声爆音
+      var vol = ((opts && opts.gain != null) ? opts.gain : 0.06) * p.vol;
+      g.gain.setValueAtTime(0.0001, t);          // 近零起坡，避免爆音
       g.gain.exponentialRampToValueAtTime(vol, t + 0.012);
       g.gain.exponentialRampToValueAtTime(0.0001, t + dur);
       osc.connect(g); g.connect(c.destination);
@@ -62,27 +79,36 @@
     } catch (e) {}
   }
 
-  // 「刷刷」纸声：白噪声 + 带通滤波从 from 扫到 to
+  // 「刷刷」纸声：白噪声 + 带通滤波扫频（扫频区间随音效包走）
   function noise(dur, gain, from, to) {
-    const c = ac();
+    var c = ac();
     if (!c || !_enabled) return;
     try {
-      const t = c.currentTime;
-      const len = Math.max(1, Math.floor(c.sampleRate * dur));
-      const buf = c.createBuffer(1, len, c.sampleRate);
-      const d = buf.getChannelData(0);
-      for (let i = 0; i < len; i++) d[i] = Math.random() * 2 - 1;
-      const src = c.createBufferSource(); src.buffer = buf;
-      const bp = c.createBiquadFilter();
+      var p = packOf(_pack);
+      var t = c.currentTime;
+      var len = Math.max(1, Math.floor(c.sampleRate * dur));
+      var buf = c.createBuffer(1, len, c.sampleRate);
+      var d = buf.getChannelData(0);
+      for (var i = 0; i < len; i++) d[i] = Math.random() * 2 - 1;
+      var src = c.createBufferSource(); src.buffer = buf;
+      var bp = c.createBiquadFilter();
       bp.type = 'bandpass'; bp.Q.value = 0.8;
-      bp.frequency.setValueAtTime(from, t);
-      bp.frequency.exponentialRampToValueAtTime(to, t + dur);
-      const g = c.createGain();
+      bp.frequency.setValueAtTime(from || p.flip[0], t);
+      bp.frequency.exponentialRampToValueAtTime(to || p.flip[1], t + dur);
+      var g = c.createGain();
       g.gain.setValueAtTime(0.0001, t);
-      g.gain.exponentialRampToValueAtTime(gain, t + dur * 0.3);
+      g.gain.exponentialRampToValueAtTime(gain * p.vol, t + dur * 0.3);
       g.gain.exponentialRampToValueAtTime(0.0001, t + dur);
       src.connect(bp); bp.connect(g); g.connect(c.destination);
       src.start(t); src.stop(t + dur + 0.02);
+    } catch (e) {}
+  }
+
+  // 震动（安卓/部分浏览器；iOS Safari 无此 API，调了也只是无效，不会报错）
+  function vibe(pattern) {
+    if (!_vibe || !_enabled) return;
+    try {
+      if (typeof navigator !== 'undefined' && navigator.vibrate) navigator.vibrate(pattern);
     } catch (e) {}
   }
 
@@ -90,27 +116,56 @@
     enabled: function () { return _enabled; },
     setEnabled: function (on) {
       _enabled = !!on;
-      const s = store();
-      if (s) { try { s.setItem(KEY, on ? '0' : '1'); } catch (e) {} }
+      writeKey('sfx-off', on ? '0' : '1');
       return _enabled;
     },
-    /** 首次手势时调用，把 AudioContext 建好（iOS 策略）；之后程序触发的音（考试告警）才能出声 */
+    /** 当前音效包 id（crisp/soft/wood） */
+    getPack: function () { return _pack; },
+    /** 换包（未知 id 回落 crisp）；返回生效的包 id */
+    setPack: function (id) {
+      _pack = PACKS[id] ? id : 'crisp';
+      writeKey('sfx-pack', _pack);
+      return _pack;
+    },
+    /** 音效包清单（设置界面渲染用）：[{id,label}] */
+    packs: function () {
+      return Object.keys(PACKS).map(function (k) { return { id: k, label: PACKS[k].label }; });
+    },
+    vibeSupported: function () {
+      return (typeof navigator !== 'undefined') && !!navigator.vibrate;
+    },
+    getVibe: function () { return _vibe; },
+    setVibe: function (on) {
+      _vibe = !!on;
+      writeKey('vibe-off', on ? '0' : '1');
+      return _vibe;
+    },
+    /** 首次手势时调用，把 AudioContext 建好（iOS 策略） */
     warm: function () { ac(); },
-    flip: function () { noise(0.14, 0.10, 900, 2600); },
-    right: function () {
-      tone(659, 0.09, { gain: 0.07 });
-      setTimeout(function () { tone(880, 0.12, { gain: 0.07 }); }, 70);
+    flip: function () { noise(0.14, 0.10); },                       // 翻卡「刷刷」
+    right: function () {                                            // 答对：双连音 + 轻震
+      var f = packOf(_pack).right;
+      tone(f[0], 0.09, { gain: 0.07 });
+      setTimeout(function () { tone(f[1], 0.12, { gain: 0.07 }); }, 70);
+      vibe(15);
     },
-    wrong: function () { tone(220, 0.18, { type: 'triangle', slideTo: 150, gain: 0.09 }); },
-    neutral: function () { tone(440, 0.06, { gain: 0.04 }); },
+    wrong: function () {                                            // 答错：低频下落 + 三段震
+      var f = packOf(_pack).wrong;
+      tone(f[0], 0.18, { slideTo: f[1], gain: 0.09 });
+      vibe([40, 60, 40]);
+    },
+    neutral: function () { tone(packOf(_pack).neutral, 0.06, { gain: 0.04 }); },
     warn: function () {
-      tone(880, 0.16, { gain: 0.08 });
-      setTimeout(function () { tone(880, 0.16, { gain: 0.08 }); }, 220);
+      var f = packOf(_pack).warn;
+      tone(f, 0.16, { gain: 0.08 });
+      setTimeout(function () { tone(f, 0.16, { gain: 0.08 }); }, 220);
     },
-    done: function () {
-      tone(523, 0.10, { gain: 0.07 });
-      setTimeout(function () { tone(659, 0.10, { gain: 0.07 }); }, 90);
-      setTimeout(function () { tone(784, 0.16, { gain: 0.07 }); }, 180);
+    done: function () {                                             // 完成：三连音 + 收尾震
+      var f = packOf(_pack).done;
+      tone(f[0], 0.10, { gain: 0.07 });
+      setTimeout(function () { tone(f[1], 0.10, { gain: 0.07 }); }, 90);
+      setTimeout(function () { tone(f[2], 0.16, { gain: 0.07 }); }, 180);
+      vibe([15, 25, 15, 25, 35]);
     }
   };
 });

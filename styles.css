@@ -129,6 +129,20 @@ body {
 .modal-card h3 { margin: 0; font-size: 17px; }
 .modal-card .btn { width: 100%; }
 
+/* v23：断点续刷横幅（题库详情页，错题本入口上方） */
+.resume-bar {
+  display: flex; align-items: center; justify-content: space-between; gap: 10px;
+  background: var(--surface); border: 1px solid var(--line);
+  border-left: 3px solid var(--primary);
+  border-radius: 12px; padding: 10px 12px; margin-top: 10px;
+  box-shadow: var(--shadow-sm);
+  animation: fadeIn .3s var(--ease) both;
+}
+.rb-info { font-size: 14px; line-height: 1.45; min-width: 0; }
+.rb-info b { color: var(--primary); }
+.rb-btns { display: flex; gap: 8px; flex: none; }
+.rb-btns .btn.small { margin-left: 0; }
+
 /* 答错：选项轻微横向抖动 240ms */
 @keyframes shakeX {
   0%, 100% { transform: translateX(0); }
@@ -220,7 +234,7 @@ body {
 }
 .appbar h1 { font-size: 18px; margin: 0; flex: 1; }
 .appbar .back { cursor: pointer; font-size: 15px; color: var(--primary); border: none; background: none; padding: 4px 0; }
-.appbar .iconbtn { cursor: pointer; border: none; background: none; color: var(--text); font-size: 20px; padding: 4px 8px; }
+.appbar .iconbtn { cursor: pointer; border: none; background: none; color: var(--text); font-size: 18px; line-height: 1.3; padding: 2px 7px; }
 /* 底部留安全区：全面屏/手势条机型上，最后一排按钮（下一题、交卷）不会被系统条压住 */
 .view {
   padding: 16px;
@@ -619,6 +633,69 @@ body {
   background: var(--bad-bg);
   color: var(--bad);
 }
+/* v24：毕业徽标（绿色系，与「错 N 次」红色区分） */
+.wb-badge-grad { background: var(--ok-bg) !important; color: var(--ok) !important; }
+.wb-restore:hover { background: var(--ok-bg); color: var(--ok); }
+
+/* v24：首页今日目标行（嵌在 home-stats 卡内） */
+.hs-today {
+  display: flex; align-items: center; gap: 8px;
+  margin-top: 8px; padding-top: 8px;
+  border-top: 1px solid var(--line-soft);
+  font-size: 14px; cursor: pointer;
+}
+.hs-today b { font-variant-numeric: tabular-nums; }
+.hs-goal-bar {
+  flex: 1; height: 6px; border-radius: 999px; overflow: hidden;
+  background: var(--line); display: inline-block;
+}
+.hs-goal-bar > span { display: block; height: 100%; background: var(--ok); border-radius: 999px; transition: width .3s var(--ease); }
+.hs-today:active { opacity: .7; }
+
+/* v24：背题卡「今日到期 N 张」 */
+.due-hint { display: block; margin-top: 4px; font-size: 12px; font-weight: 600; color: var(--primary); }
+
+/* v25：题目卡片编辑按钮（弱化，hover 才显眼） */
+.qcard-edit {
+  flex: none; border: none; background: none; cursor: pointer;
+  color: var(--muted); font-size: 13px; padding: 2px 4px; opacity: .55;
+  transition: opacity var(--dur-fast) var(--ease);
+}
+.qcard-edit:hover, .qcard-edit:active { opacity: 1; }
+
+/* v25：目录树掌握度色点（非文字装饰元素，tooltip 说明数值） */
+.ol-dot {
+  display: inline-block; width: 8px; height: 8px; border-radius: 50%;
+  margin: 0 2px; vertical-align: middle; flex: none;
+}
+.ol-dot-ok { background: var(--ok); }
+.ol-dot-mid { background: var(--warn); }
+.ol-dot-bad { background: var(--bad); }
+
+/* v24：PWA 更新提示条（底部常驻，主色底） */
+.update-bar {
+  position: fixed; left: 50%; transform: translateX(-50%);
+  bottom: calc(14px + env(safe-area-inset-bottom, 0px));
+  z-index: 55;
+  display: flex; align-items: center; gap: 10px;
+  background: var(--primary); color: var(--on-primary);
+  border-radius: 999px; padding: 8px 8px 8px 16px;
+  box-shadow: var(--shadow);
+  font-size: 14px; font-weight: 600;
+  animation: fadeIn .3s var(--ease) both;
+  max-width: calc(100vw - 32px);
+}
+.update-bar.hidden { display: none; }
+.update-bar button {
+  border: none; cursor: pointer; font-family: inherit;
+  background: var(--on-primary); color: var(--primary);
+  font-size: 13px; font-weight: 700;
+  border-radius: 999px; padding: 5px 14px;
+}
+.update-bar #updateClose {
+  background: transparent; color: var(--on-primary);
+  padding: 5px 8px; font-weight: 400; opacity: .85;
+}
 .wb-chip {
   display: inline-flex;
   align-items: center;
@@ -781,12 +858,14 @@ body {
   border-bottom: 1px solid var(--line-soft);
   /* 不用 backdrop-filter：低端安卓上 blur(12px) 滚动掉帧，直接实色 */
   background: var(--surface);
-  padding-top: calc(15px + env(safe-area-inset-top, 0px));
-  padding-bottom: 15px;
+  /* v23：表头瘦身——用户反馈手机上占位过高；15/15 → 9/9，标题 18 → 17 */
+  padding-top: calc(9px + env(safe-area-inset-top, 0px));
+  padding-bottom: 9px;
 }
-.appbar h1 { display: flex; align-items: baseline; gap: 9px; letter-spacing: .01em; }
+/* v23：1.25 的行高低于中文字形自然高度，行盒反而被撑大——1.5 刚好贴住字形 */
+.appbar h1 { display: flex; align-items: baseline; gap: 9px; letter-spacing: .01em; font-size: 17px; line-height: 1.5; }
 .brand-mark { color: var(--primary); font-size: 11px; font-weight: 800; letter-spacing: .18em; }
-.brand-title { font-size: 18px; font-weight: 750; }
+.brand-title { font-size: 17px; font-weight: 750; }
 .appbar .back { font-weight: 650; color: var(--primary); }
 .iconbtn { opacity: .8; }
 .view { max-width: 780px; margin: 0 auto; padding-top: 22px; }

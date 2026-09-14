@@ -74,6 +74,15 @@
     <!-- F2：本题库近 14 天每日做题量，由 renderBankChart 填充 -->
     <div id="bankChart" class="bank-chart hidden"></div>
 
+    <!-- v23：断点续刷——上次没做完的背题/刷题会话，进题库即可一键接着来 -->
+    <div id="resumeBar" class="resume-bar hidden">
+      <div class="rb-info">▶️ 继续上次 <b id="resumeDesc"></b></div>
+      <div class="rb-btns">
+        <button class="btn small" id="resumeGo">继续 ›</button>
+        <button class="btn ghost small" id="resumeDrop">放弃</button>
+      </div>
+    </div>
+
     <!-- F1：错题本入口（跨会话，数据来自 progress 的累计答错次数） -->
     <button class="wb-entry" id="wrongEntry" type="button">
       <span>🔥 错题本</span>
@@ -89,7 +98,7 @@
     <div class="mode-grid">
       <div class="mode-card" data-mode="memorize">
         <h3>🃏 背题模式</h3>
-        <p>卡片正反面翻转，按记忆曲线安排复习（忘记 / 模糊 / 记住），适合记忆巩固。</p>
+        <p>卡片正反面翻转，按记忆曲线安排复习（忘记 / 模糊 / 记住），适合记忆巩固。<span class="due-hint" id="memDueHint"></span></p>
       </div>
       <div class="mode-card" data-mode="practice">
         <h3>✍️ 刷题模式</h3>
@@ -149,6 +158,58 @@
       <div class="muted" style="font-size:12px;margin:4px 0 12px">清空本机全部题库与进度，完全换成备份内容（不可撤销）</div>
       <button class="btn ghost" id="rmCancel">取消</button>
     </div>
+  </div>
+
+  <!-- v23：声音与震动设置（音效包换包即试听） -->
+  <div class="modal-mask hidden" id="sfxModal">
+    <div class="modal-card">
+      <h3>🔔 声音与震动</h3>
+      <div class="field"><label>音效</label>
+        <div class="seg" id="sfxOnSeg">
+          <button data-v="1">开</button><button data-v="0">关</button>
+        </div>
+      </div>
+      <div class="field"><label>音效包（切换即试听）</label>
+        <div class="seg" id="packSeg">
+          <button data-v="crisp">清脆</button><button data-v="soft">柔和</button><button data-v="wood">木质</button>
+        </div>
+      </div>
+      <div class="field hidden" id="vibeField"><label>震动（做完一题 / 答错时轻震）</label>
+        <div class="seg" id="vibeSeg">
+          <button data-v="1">开</button><button data-v="0">关</button>
+        </div>
+      </div>
+      <button class="btn ghost" id="sfxModalClose">关闭</button>
+    </div>
+  </div>
+
+  <!-- v25：题目编辑弹层（内容由 app.js 按题型生成） -->
+  <div class="modal-mask hidden" id="editModal">
+    <div class="modal-card">
+      <h3>✏️ 编辑题目</h3>
+      <div id="editBody"></div>
+      <button class="btn" id="editSave">保存</button>
+      <button class="btn ghost" id="editCancel">取消</button>
+    </div>
+  </div>
+
+  <!-- v24：每日目标设置 -->
+  <div class="modal-mask hidden" id="goalModal">
+    <div class="modal-card">
+      <h3>🎯 每日目标</h3>
+      <div class="seg" id="goalSeg" style="margin:12px 0">
+        <button data-v="20">20 题</button><button data-v="50">50 题</button>
+        <button data-v="100">100 题</button><button data-v="150">150 题</button>
+      </div>
+      <button class="btn ghost" id="goalModalClose">关闭</button>
+    </div>
+  </div>
+
+  <!-- v24：PWA 更新提示条（新版装好后出现，点刷新即用上） -->
+  <div class="update-bar hidden" id="updateBar">
+    <span>🎉 新版本已就绪</span>
+    <button id="updateReload">刷新</button>
+    <button id="updateClose" title="关闭">✕</button>
   </div>
 
   <div class="toast" id="toast"></div>

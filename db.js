@@ -352,10 +352,14 @@
           const p = g.result || { qid: it.qid, bankId: bankId, ease: 2.5, interval: 0, reps: 0, due: 0, lapses: 0 };
           p.bankId = bankId;
           p[field] = p[field] || { correct: 0, wrong: 0 };
-          if (it.ok) p[field].correct++;
-          else {
+          if (it.ok) {
+            p[field].correct++;
+            // v24 错题毕业：连续答对计数 +1（达到 wrongGradN() 次自动移出错题本活跃清单）
+            p.wrongStreak = (p.wrongStreak || 0) + 1;
+          } else {
             p[field].wrong++;
             p.lapses = (p.lapses || 0) + 1;
+            p.wrongStreak = 0;            // 答错即断连续，重新回到活跃错题
             // 错题本（F1）：记下最近错误时间用于排序；曾被手动移除的要重新收回来
             p.lastWrong = Date.now();
             p.wrongDismissed = false;
@@ -393,34 +397,56 @@
 
   /**
    * 从 progress 记录挑出错题并排序
+   * v24 毕业口径：连续答对 wrongGradN() 次（wrongStreak）即「毕业」，移出活跃清单；
+   *   opts.graduated = true 时反转为「只要已毕业的」（错题本的已毕业栏用）。
+   *   手动移除（wrongDismissed）的在两个视图里都不出现。
    * @param {Array} progs  DB.listProgress(bankId) 的结果
    * @param {Object} [opts]
    * @param {Object} [opts.questionMap] qid -> 题目；给了就会带出题目对象，且题目已不存在的记录不列
    * @param {Array<string>} [opts.types] 只保留这些题型
    * @param {string} [opts.chapter] 只保留顶层章节名等于它的题
-   * @returns {Array<{qid,question,wrong,right,lastWrong,order}>}
+   * @param {boolean} [opts.graduated] true=只看已毕业；默认只看进行中
+   * @returns {Array<{qid,question,wrong,right,lastWrong,order,graduated}>}
    */
+  const WRONG_GRAD_N = 2;
+  function wrongGradN() { return WRONG_GRAD_N; }
   function pickWrong(progs, opts) {
     const o = opts || {};
     const qmap = o.questionMap || null;
     const types = (o.types && o.types.length) ? new Set(o.types) : null;
     const chap = o.chapter || null;
+    const wantGrad = !!o.graduated;
     const out = [];
     (progs || []).forEach(p => {
       if (!p || !p.qid) return;
       const w = wrongCount(p);
       if (w <= 0 || p.wrongDismissed) return;
+      const grad = (p.wrongStreak || 0) >= WRONG_GRAD_N;
+      if (grad !== wantGrad) return;               // 活跃栏不要毕业的，毕业栏只要毕业的
       const q = qmap ? (qmap[p.qid] || null) : null;
       if (qmap && !q) return;                       // 题目已被删/重导入过：无从展示，不列
       if (types && !types.has(q.type)) return;
       if (chap && topChapter(q) !== chap) return;
       out.push({
         qid: p.qid, question: q, wrong: w, right: rightCount(p),
-        lastWrong: p.lastWrong || p.due || 0, order: q ? (q.order || 0) : 0
+        lastWrong: p.lastWrong || p.due || 0, order: q ? (q.order || 0) : 0,
+        graduated: grad
       });
     });
     out.sort((a, b) => (b.wrong - a.wrong) || (b.lastWrong - a.lastWrong) || (a.order - b.order));
     return out;
+  }
+
+  // v24：把毕业的错题收回活跃（重置连续答对计数），供「重新练习」
+  async function restoreWrong(qid, bankId) {
+    const s = await tx('progress', 'readwrite');
+    const p = await reqP(s.get(qid));
+    if (!p) return false;
+    p.wrongStreak = 0;
+    p.wrongDismissed = false;
+    if (bankId) p.bankId = bankId;
+    await reqP(s.put(p));
+    return true;
   }
 
   // 单题移出/收回错题本（不动 correct/wrong 计数，统计口径保持累计）
@@ -770,16 +796,63 @@
     };
   }
 
+  // ---- v25：题目编辑 ----
+  // 只改内容字段，id/bankId/order 等骨架字段保持原值（传进来的同名字段会被忽略）
+  async function updateQuestion(q) {
+    if (!q || !q.id) throw new Error('题目缺少 id');
+    const s = await tx('questions', 'readwrite');
+    const cur = await reqP(s.get(q.id));
+    if (!cur) return false;
+    const rec = Object.assign({}, cur, q, { id: cur.id, bankId: cur.bankId, order: cur.order });
+    await reqP(s.put(rec));
+    return true;
+  }
+
+  // ---- v25：目录树节点掌握度（纯函数，单测覆盖） ----
+  // 节点口径 = 自身 + 全部后代的题目累计对/错；attempts < minAttempts(3) 时 acc=null（练太少不上色）
+  // h1（题库名容器）不参与。返回 { [nodeId]: {acc, attempts, total} }
+  function outlineMastery(outline, questions, progs, opts) {
+    const minA = (opts && opts.minAttempts != null) ? opts.minAttempts : 3;
+    const pmap = {};
+    (progs || []).forEach(p => { if (p && p.qid) pmap[p.qid] = p; });
+    const rows = (questions || []).filter(Boolean).map(q => ({
+      path: (Array.isArray(q.chapterPath) && q.chapterPath.length) ? q.chapterPath : [q.chapter || '未分组'],
+      r: rightCount(pmap[q.id]),
+      w: wrongCount(pmap[q.id])
+    }));
+    const out = {};
+    (function walk(nodes, acc) {
+      (nodes || []).forEach(n => {
+        if (!n || !n.id) return;
+        if (n.level === 1) { walk(n.children, []); return; }   // h1 是题库名容器
+        const path = acc.concat(n.title);
+        let r = 0, w = 0, total = 0;
+        rows.forEach(row => {
+          if (row.path.length >= path.length && path.every((t, i) => row.path[i] === t)) {
+            total++; r += row.r; w += row.w;
+          }
+        });
+        const attempts = r + w;
+        out[n.id] = {
+          acc: (attempts >= minA) ? r / attempts : null,
+          attempts: attempts, total: total
+        };
+        walk(n.children, path);
+      });
+    })(outline, []);
+    return out;
+  }
+
   return {
     open, saveBank, listBanks, getBank, deleteBank, sanitizeOutline,
-    addQuestions, listQuestions,
+    addQuestions, listQuestions, updateQuestion,
     getOutline, deriveOutlineFromQuestions, expandChapterPaths,
     countByChapterPath, applyCounts, chapterKey,
     getProgress, saveProgress, listProgress, bulkUpdateProgress,
-    wrongCount, rightCount, topChapter, pickWrong, setWrongDismissed,
+    wrongCount, rightCount, topChapter, pickWrong, setWrongDismissed, wrongGradN, restoreWrong,
     ensureSessionsStore, logSessions, listSessions,
     dayKey, aggTotals, dailyCounts, streakDays,
-    chapterAccuracy, weakChapters, weakPack,
+    chapterAccuracy, weakChapters, weakPack, outlineMastery,
     dumpAll, restoreAll,
     mergeProgressRecords, pickBankRecord, planMerge, mergeAll,
     setEventHandler, isQuotaError, uid
