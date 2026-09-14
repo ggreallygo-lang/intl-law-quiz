@@ -862,10 +862,12 @@ body {
   padding-top: calc(9px + env(safe-area-inset-top, 0px));
   padding-bottom: 9px;
 }
-/* v23：1.25 的行高低于中文字形自然高度，行盒反而被撑大——1.5 刚好贴住字形 */
-.appbar h1 { display: flex; align-items: baseline; gap: 9px; letter-spacing: .01em; font-size: 17px; line-height: 1.5; }
-.brand-mark { color: var(--primary); font-size: 11px; font-weight: 800; letter-spacing: .18em; }
-.brand-title { font-size: 17px; font-weight: 750; }
+/* v23：1.25 的行高低于中文字形自然高度，行盒反而被撑大——1.5 刚好贴住字形
+   v26：长题库名（如「00247 国际法 考前必背95题（填空卡）」）在顶栏折成 4-6 行，
+   表头被撑到 1/4 屏——顶栏标题一律单行 + 省略号，完整名仍在题库卡片上 */
+.appbar h1 { display: flex; align-items: baseline; gap: 9px; letter-spacing: .01em; font-size: 17px; line-height: 1.5; min-width: 0; }
+.brand-mark { color: var(--primary); font-size: 11px; font-weight: 800; letter-spacing: .18em; flex: none; }
+.brand-title { font-size: 17px; font-weight: 750; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .appbar .back { font-weight: 650; color: var(--primary); }
 .iconbtn { opacity: .8; }
 .view { max-width: 780px; margin: 0 auto; padding-top: 22px; }
@@ -919,3 +921,45 @@ body {
   .mode-card h3 { grid-column: 1 / -1; }
   .mode-card p { grid-column: 1 / -1; }
 }
+
+/* ===== v27：考试倒计时 + 目标计划 ===== */
+.exam-card {
+  background: var(--surface); border: 1px solid var(--line); border-radius: 16px;
+  padding: 14px 16px; margin-bottom: 12px; position: relative; overflow: hidden;
+  cursor: pointer;
+}
+.exam-card::before {
+  content: ""; position: absolute; inset: 0 auto 0 0; width: 4px; background: var(--primary);
+}
+.exam-head { display: flex; align-items: baseline; gap: 8px; font-size: 14px; }
+.exam-days { font-size: 22px; font-weight: 800; color: var(--primary); }
+.exam-sub { color: var(--muted); font-size: 12px; }
+.exam-empty { font-size: 14px; color: var(--muted); }
+.goal-item { margin-top: 10px; font-size: 13px; }
+.goal-line { display: flex; justify-content: space-between; gap: 8px; align-items: baseline; }
+.goal-title { font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.goal-meta { color: var(--muted); font-size: 12px; flex: none; }
+.goal-meta.warn { color: #c0392b; font-weight: 700; }
+.goal-bar { height: 6px; border-radius: 3px; background: var(--seg-bg); margin-top: 5px; overflow: hidden; }
+.goal-bar > span { display: block; height: 100%; border-radius: 3px; background: var(--primary); }
+.goal-done .goal-bar > span { background: #3d9a50; }
+.goal-hint { margin-top: 8px; font-size: 12px; color: var(--muted); }
+.goal-hint button { color: var(--primary); border: none; background: none; padding: 0; font-size: 12px; cursor: pointer; font-weight: 700; }
+
+/* 计划弹层：内容多，允许滚动 */
+.plan-card { max-height: 84dvh; overflow-y: auto; }
+.plan-card .field { margin-top: 12px; }
+.plan-card input, .plan-card select {
+  width: 100%; padding: 9px 10px; border: 1px solid var(--line); border-radius: 10px;
+  background: var(--surface); color: var(--text); font-size: 16px; margin-top: 4px;
+}
+.plan-row { display: flex; gap: 8px; }
+.plan-row > * { flex: 1; min-width: 0; }
+.plan-list { margin-top: 14px; }
+.pg-item { border: 1px solid var(--line); border-radius: 12px; padding: 10px 12px; margin-bottom: 8px; font-size: 13px; }
+.pg-top { display: flex; justify-content: space-between; gap: 8px; align-items: center; }
+.pg-title { font-weight: 650; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.pg-meta { color: var(--muted); font-size: 12px; flex: none; }
+.pg-ops { display: flex; gap: 10px; margin-top: 6px; }
+.pg-ops button { border: none; background: none; padding: 0; font-size: 12px; cursor: pointer; color: var(--primary); }
+.pg-ops button.pg-del { color: #c0392b; }

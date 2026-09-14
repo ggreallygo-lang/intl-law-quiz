@@ -20,7 +20,7 @@
   'use strict';
 
   const DB_NAME = 'card-quiz';
-  const DB_VERSION = 3;
+  const DB_VERSION = 4;
   let _db = null;
   let _opening = null;          // 复用同一个 open Promise，避免并发时重复打开
 
@@ -84,6 +84,8 @@
         }
         // --- v2 -> v3：新增 sessions 作答流水表（F2 统计面板），只加表不迁旧数据 ---
         if (e.oldVersion < 3) ensureSessionsStore(db);
+        // --- v3 -> v4：新增 goals 考试目标表 + meta 键值表（考试日期/模拟计数），只加表 ---
+        if (e.oldVersion < 4) { ensureGoalsStore(db); ensureMetaStore(db); }
       };
       // 另一个标签页正开着旧版本数据库 → 升级被阻塞。
       // 不处理的话界面会一直卡住且没有任何提示。
@@ -325,6 +327,9 @@
   }
   async function listProgress(bankId) {
     const s = await tx('progress', 'readonly');
+    // v27：不带 bankId 时返回全量（考试计划的目标进度要跨库算；
+    // IDBKeyRange.only(undefined) 会直接 DataError，老写法漏了这个分支）
+    if (bankId == null) return reqP(s.getAll());
     const idx = s.index('bankId');
     return reqP(idx.getAll(IDBKeyRange.only(bankId)));
   }
@@ -466,10 +471,13 @@
     const questions = await reqP((await tx('questions', 'readonly')).getAll());
     const progress = await reqP((await tx('progress', 'readonly')).getAll());
     const sessions = await reqP((await tx('sessions', 'readonly')).getAll());
+    const goals = await reqP((await tx('goals', 'readonly')).getAll());
+    const meta = await reqP((await tx('meta', 'readonly')).getAll());
     // 老库存的 outline 可能仍带 parent 环（sanitizeOutline 是后来才加的），导出前统一再剥一次
     const cleanBanks = (banks || []).map(b =>
       (b && b.outline) ? Object.assign({}, b, { outline: sanitizeOutline(b.outline) }) : b);
-    return { app: 'card-quiz', version: 1, exportedAt: Date.now(), banks: cleanBanks, questions: questions, progress: progress, sessions: sessions };
+    return { app: 'card-quiz', version: 1, exportedAt: Date.now(), banks: cleanBanks, questions: questions,
+             progress: progress, sessions: sessions, goals: goals || [], meta: meta || [] };
   }
 
   async function restoreAll(dump) {
@@ -477,13 +485,16 @@
       throw new Error('备份文件格式不对');
     }
     const db = await open();
-    const t = db.transaction(['banks', 'questions', 'progress', 'sessions'], 'readwrite');
+    const t = db.transaction(['banks', 'questions', 'progress', 'sessions', 'goals', 'meta'], 'readwrite');
     const bs = t.objectStore('banks'), qs = t.objectStore('questions'), ps = t.objectStore('progress'), ss = t.objectStore('sessions');
-    bs.clear(); qs.clear(); ps.clear(); ss.clear();
+    const gs = t.objectStore('goals'), ms = t.objectStore('meta');
+    bs.clear(); qs.clear(); ps.clear(); ss.clear(); gs.clear(); ms.clear();
     dump.banks.forEach(b => bs.put(b));
     dump.questions.forEach(q => qs.put(q));
     (dump.progress || []).forEach(p => ps.put(p));
     (dump.sessions || []).forEach(s => ss.put(s));
+    (dump.goals || []).forEach(g => gs.put(g));
+    (dump.meta || []).forEach(m => ms.put(m));
     await txDone(t);
   }
 
@@ -586,7 +597,24 @@
       if (!sessIds[s.id]) { sessions.push(s); stats.sessionsAdded++; }
     });
 
-    return { banks: banks, questions: questions, progress: progress, sessions: sessions, stats: stats };
+    // v27：目标按 id 归并（updatedAt 新者胜）；meta 里考试信息取新者、模拟计数取 max
+    const gm = mergeGoals(dump.goals, L.goals);
+    stats.goalsAdded = gm.stats.goalsAdded;
+    stats.goalsMerged = gm.stats.goalsMerged;
+    const metaOut = [];
+    const dumpExam = (dump.meta || []).filter(m => m && m.key === 'exam')[0] || null;
+    const localExam = (L.meta || []).filter(m => m && m.key === 'exam')[0] || null;
+    const exam = (dumpExam && localExam)
+      ? ((dumpExam.updatedAt || 0) > (localExam.updatedAt || 0) ? dumpExam : localExam)
+      : (dumpExam || localExam);
+    if (exam) metaOut.push(exam);
+    const dMock = (dump.meta || []).filter(m => m && m.key === 'mockCount')[0] || null;
+    const lMock = (L.meta || []).filter(m => m && m.key === 'mockCount')[0] || null;
+    const mockVal = Math.max((dMock && +dMock.value) || 0, (lMock && +lMock.value) || 0);
+    if (dMock || lMock) metaOut.push({ key: 'mockCount', value: mockVal, updatedAt: Date.now() });
+
+    return { banks: banks, questions: questions, progress: progress, sessions: sessions,
+             goals: gm.goals, meta: metaOut, stats: stats };
   }
 
   /** 整机合并恢复：先只读快照本机全量 → 纯函数算合并计划 → 单事务写入 */
@@ -595,18 +623,178 @@
       banks: await reqP((await tx('banks', 'readonly')).getAll()),
       questions: await reqP((await tx('questions', 'readonly')).getAll()),
       progress: await reqP((await tx('progress', 'readonly')).getAll()),
-      sessions: await reqP((await tx('sessions', 'readonly')).getAll())
+      sessions: await reqP((await tx('sessions', 'readonly')).getAll()),
+      goals: await reqP((await tx('goals', 'readonly')).getAll()),
+      meta: await reqP((await tx('meta', 'readonly')).getAll())
     };
     const plan = planMerge(dump, local);          // 格式不对在这里抛
     const db = await open();
-    const t = db.transaction(['banks', 'questions', 'progress', 'sessions'], 'readwrite');
+    const t = db.transaction(['banks', 'questions', 'progress', 'sessions', 'goals', 'meta'], 'readwrite');
     const bs = t.objectStore('banks'), qs = t.objectStore('questions'), ps = t.objectStore('progress'), ss = t.objectStore('sessions');
+    const gs = t.objectStore('goals'), ms = t.objectStore('meta');
     plan.banks.forEach(b => bs.put(b));
     plan.questions.forEach(q => qs.put(q));
     plan.progress.forEach(p => ps.put(p));
     plan.sessions.forEach(s => ss.put(s));
+    plan.goals.forEach(g => gs.put(g));
+    (plan.meta || []).forEach(m => ms.put(m));
     await txDone(t);
     return plan.stats;
+  }
+
+  // ---------- v27：考试倒计时 + 多目标计划（goals 表 + meta 表） ----------
+  // 建表抽成纯函数（与 ensureSessionsStore 同模式，可 stub 单测）
+  function ensureGoalsStore(db) {
+    if (!db || !db.objectStoreNames || db.objectStoreNames.contains('goals')) return false;
+    db.createObjectStore('goals', { keyPath: 'id' });
+    return true;
+  }
+  function ensureMetaStore(db) {
+    if (!db || !db.objectStoreNames || db.objectStoreNames.contains('meta')) return false;
+    db.createObjectStore('meta', { keyPath: 'key' });
+    return true;
+  }
+
+  async function saveGoal(g) {
+    if (!g || !g.id) throw new Error('goal.id 必填');
+    const s = await tx('goals', 'readwrite');
+    s.put(Object.assign({}, g, { updatedAt: Date.now() }));
+    await txDone(s.transaction);
+    return g.id;
+  }
+  async function listGoals() {
+    const all = (await reqP((await tx('goals', 'readonly')).getAll())) || [];
+    return all
+      .filter(g => g && g.id)
+      .sort((a, b) => String(a.deadline || '9999-12-31').localeCompare(String(b.deadline || '9999-12-31')));
+  }
+  async function deleteGoal(id) {
+    const s = await tx('goals', 'readwrite');
+    s.delete(id);
+    await txDone(s.transaction);
+  }
+
+  // meta 键值表：考试信息（key='exam'，name/date 平铺）与杂项计数（key='mockCount' 等，value 包一层）
+  async function getExam() {
+    const rec = await reqP((await tx('meta', 'readonly')).get('exam'));
+    return (rec && /^\d{4}-\d{2}-\d{2}$/.test(String(rec.date || '')))
+      ? { name: rec.name || '考试', date: rec.date } : null;
+  }
+  async function setExam(exam) {
+    if (!exam || !/^\d{4}-\d{2}-\d{2}$/.test(String(exam.date || ''))) {
+      throw new Error('考试日期格式应为 YYYY-MM-DD');
+    }
+    const s = await tx('meta', 'readwrite');
+    s.put({ key: 'exam', name: String(exam.name || '考试').slice(0, 40), date: exam.date, updatedAt: Date.now() });
+    await txDone(s.transaction);
+  }
+  async function getMeta(key) {
+    const rec = await reqP((await tx('meta', 'readonly')).get(key));
+    return rec ? rec.value : null;
+  }
+  async function setMeta(key, value) {
+    const s = await tx('meta', 'readwrite');
+    s.put({ key: key, value: value, updatedAt: Date.now() });
+    await txDone(s.transaction);
+  }
+
+  /**
+   * 纯函数（单测覆盖）：按目标口径算进度。data 由调用方备好（可全量、可按 scope 过滤）：
+   *   sessions = 作答流水；progs = 进度记录；mockCount = 已完成整卷模拟次数（meta 计数）。
+   * metric 口径：
+   *   new    一轮做题 —— done 取流水里出现过的去重题目数（重做不灌水）；target 默认 1
+   *   wrong  错题清零 —— done=已出册（手动移除或连对毕业），target 默认入册总数
+   *   mock   整卷模拟 —— done=mockCount
+   *   manual 手动勾选 —— done=goal.manualDone?1:0
+   */
+  function goalProgress(goal, data) {
+    const d = data || {};
+    const target = Math.max(1, +goal.target || 0);
+    if (goal.metric === 'new') {
+      const seen = {};
+      (d.sessions || []).forEach(s => { if (s && s.qid) seen[s.qid] = 1; });
+      return { done: Object.keys(seen).length, target: target };
+    }
+    if (goal.metric === 'wrong') {
+      let total = 0, done = 0;
+      const gradN = wrongGradN();
+      (d.progs || []).forEach(p => {
+        if (!p || wrongCount(p) <= 0) return;
+        total++;
+        if (p.wrongDismissed || (p.wrongStreak || 0) >= gradN) done++;
+      });
+      return { done: done, target: Math.max(target, total, 1) };
+    }
+    if (goal.metric === 'mock') return { done: Math.max(0, +d.mockCount || 0), target: target };
+    return { done: goal.manualDone ? 1 : 0, target: 1 };   // manual / 未知口径
+  }
+
+  /** 纯函数：YYYY-MM-DD 日期差（b-a 的天数，本地时区口径） */
+  function daysBetween(a, b) {
+    const pa = Date.parse(a + 'T00:00:00'), pb = Date.parse(b + 'T00:00:00');
+    if (!pa || !pb) return 0;
+    return Math.round((pb - pa) / 86400000);
+  }
+  /** 纯函数：日期串加 n 天，返回同格式 */
+  function addDays(dateStr, n) {
+    const t = new Date(Date.parse(dateStr + 'T00:00:00') + n * 86400000);
+    const m = t.getMonth() + 1, day = t.getDate();
+    return t.getFullYear() + '-' + (m < 10 ? '0' + m : m) + '-' + (day < 10 ? '0' + day : day);
+  }
+
+  /**
+   * 纯函数（单测覆盖）：三阶段备考建议——「生成建议计划」的引擎，全是透明除法可验算。
+   * today/examDate 均为 YYYY-MM-DD；data = { bankSizes:{bankId:题数}, sessions, progs }。
+   * 一轮（→考前14天）所有题过一遍；二轮（→考前3天）错题清零；冲刺（→考试日）整卷模拟×2。
+   * 考期太近时窗口自动压缩：deadline 不早于明天、不晚于考试日。
+   */
+  function planExamGoals(today, examDate, data) {
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(String(today)) || !/^\d{4}-\d{2}-\d{2}$/.test(String(examDate)) ||
+        daysBetween(today, examDate) < 1) return [];
+    const d = data || {};
+    const tomorrow = addDays(today, 1);
+    const clamp = (s) => (s < tomorrow ? tomorrow : (s > examDate ? examDate : s));
+    const dl1 = clamp(addDays(examDate, -14));
+    const dl2 = clamp(addDays(examDate, -3));
+
+    const totalQs = Object.keys(d.bankSizes || {}).reduce((a, k) => a + (d.bankSizes[k] || 0), 0);
+    const seen = {};
+    (d.sessions || []).forEach(s => { if (s && s.qid) seen[s.qid] = 1; });
+    const practiced = Object.keys(seen).length;
+
+    let wrongActive = 0;
+    const gradN = wrongGradN();
+    (d.progs || []).forEach(p => {
+      if (p && wrongCount(p) > 0 && !p.wrongDismissed && (p.wrongStreak || 0) < gradN) wrongActive++;
+    });
+
+    return [
+      { title: totalQs > practiced
+          ? '一轮：所有题过一遍（还剩 ' + (totalQs - practiced) + ' 题）'
+          : '一轮巩固：全部题目已过，保持手感',
+        deadline: dl1, metric: 'new', target: Math.max(totalQs, 1), scope: 'all' },
+      { title: '二轮：错题清零（当前活跃 ' + wrongActive + ' 道）',
+        deadline: dl2, metric: 'wrong', target: 0, scope: 'all' },
+      { title: '冲刺：考前整卷模拟 ×2',
+        deadline: examDate, metric: 'mock', target: 2, scope: 'all' }
+    ];
+  }
+
+  /** 纯函数（单测覆盖）：目标合并——按 id 归并，updatedAt 新者胜（合并恢复的 goals 部分） */
+  function mergeGoals(dumpGoals, localGoals) {
+    const byId = {};
+    (localGoals || []).forEach(g => { if (g && g.id) byId[g.id] = g; });
+    const out = [];
+    let added = 0, merged = 0;
+    (dumpGoals || []).forEach(g => {
+      if (!g || !g.id) return;
+      const cur = byId[g.id];
+      if (cur) {
+        out.push((g.updatedAt || 0) > (cur.updatedAt || 0) ? g : cur);
+        merged++;
+      } else { out.push(g); added++; }
+    });
+    return { goals: out, stats: { goalsAdded: added, goalsMerged: merged } };
   }
 
   // ---------- F2：sessions 作答流水（统计面板） ----------
@@ -855,6 +1043,9 @@
     chapterAccuracy, weakChapters, weakPack, outlineMastery,
     dumpAll, restoreAll,
     mergeProgressRecords, pickBankRecord, planMerge, mergeAll,
+    saveGoal, listGoals, deleteGoal, goalProgress, planExamGoals, mergeGoals,
+    getExam, setExam, getMeta, setMeta, daysBetween, addDays,
+    ensureGoalsStore, ensureMetaStore,
     setEventHandler, isQuotaError, uid
   };
 });

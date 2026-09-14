@@ -127,6 +127,7 @@
   async function renderHome() {
     const banks = await DB.listBanks();
     safe(renderHomeStats(), '加载统计失败');   // 统计卡并行加载，不阻塞题库列表
+    safe(renderExamCard(), '加载考试计划失败'); // v27：倒计时/目标卡并行加载
     const list = $('#bankList');
     if (!banks.length) {
       list.innerHTML = '<div class="empty">还没有题库，导入一个 .md / .txt 开始吧 👆</div>';
@@ -179,6 +180,117 @@
     box.classList.remove('hidden');
   }
 
+  // ---------- v27：考试倒计时 + 多目标计划（db.js goals/meta 表的 UI 层） ----------
+  const METRIC_LABEL = { new: '累计做题', wrong: '错题清零', mock: '整卷模拟', manual: '手动勾选' };
+  const METRIC_UNIT = { new: '题', wrong: '道', mock: '次', manual: '' };
+  function todayStr() {
+    const d = new Date();
+    const m = d.getMonth() + 1, day = d.getDate();
+    return d.getFullYear() + '-' + (m < 10 ? '0' + m : m) + '-' + (day < 10 ? '0' + day : day);
+  }
+  function fmtDateCn(s) {                       // '2026-10-24' → '10月24日'
+    const p = String(s || '').split('-');
+    return p.length === 3 ? (+p[1]) + '月' + (+p[2]) + '日' : (s || '');
+  }
+  function shorten(s, n) { s = String(s || ''); return s.length > n ? s.slice(0, n) + '…' : s; }
+  // 目标进度数据快照：全量流水 + 全量进度 + 各库题数 + 模拟计数
+  async function goalDataSnapshot() {
+    const arr = await Promise.all([DB.listSessions(), DB.listProgress(), DB.listBanks(), DB.getMeta('mockCount')]);
+    const bankSizes = {};
+    (arr[2] || []).forEach(b => { bankSizes[b.id] = b.count || 0; });
+    return { sessions: arr[0] || [], progs: arr[1] || [], bankSizes: bankSizes, mockCount: +arr[3] || 0 };
+  }
+  // 首页倒计时卡：考试信息 + 目标进度（还差多少 / 剩几天 / 每天多少）
+  async function renderExamCard() {
+    const box = $('#examCard'); if (!box) return;
+    box.onclick = (e) => {
+      if (e.target.dataset.fixgoal) {          // 一键把每日目标调成建议节奏
+        localStorage.setItem(GOAL_KEY, String(+e.target.dataset.fixgoal || 50));
+        toast('每日目标已调整');
+        safe(renderHomeStats(), '刷新统计失败');
+        safe(renderExamCard(), '刷新计划失败');
+        return;
+      }
+      openPlanModal();
+    };
+    const exam = await DB.getExam();
+    if (!exam) {
+      box.innerHTML = '<div class="exam-empty">⏳ 设个考试日期，安排你的备考计划 ›</div>';
+      box.classList.remove('hidden');
+      return;
+    }
+    const days = DB.daysBetween(todayStr(), exam.date);
+    const goals = await DB.listGoals();
+    const data = await goalDataSnapshot();
+    let html =
+      `<div class="exam-head"><span class="exam-days">${Math.max(0, days)}</span>` +
+      `<span>天后考试</span><span class="exam-sub">${esc(exam.name)} · ${fmtDateCn(exam.date)}</span></div>`;
+    if (!goals.length) {
+      html += '<div class="goal-hint">还没有目标——点这里添加，或用「生成建议计划」一键三阶段</div>';
+    }
+    const perDays = [];                         // (goal, perDay) 供每日目标建议
+    goals.slice(0, 4).forEach(g => {
+      const pr = DB.goalProgress(g, data);
+      const left = DB.daysBetween(todayStr(), g.deadline);
+      const done = pr.done >= pr.target;
+      const pct = Math.min(100, Math.round(pr.done / pr.target * 100));
+      const remain = Math.max(0, pr.target - pr.done);
+      const perDay = (!done && left > 0 && g.metric !== 'manual') ? Math.ceil(remain / left) : null;
+      perDays.push({ g: g, perDay: perDay });
+      html += `<div class="goal-item${done ? ' goal-done' : ''}">` +
+        `<div class="goal-line"><span class="goal-title">${done ? '✅ ' : ''}${esc(shorten(g.title, 22))}</span>` +
+        `<span class="goal-meta${left < 3 && !done ? ' warn' : ''}">${left >= 0 ? '剩 ' + left + ' 天' : '已到期'}</span></div>` +
+        `<div class="goal-bar"><span style="width:${pct}%"></span></div>` +
+        `<div class="goal-meta" style="margin-top:3px">${pr.done} / ${pr.target}` +
+        (perDay ? ` · 每天 ${perDay} ${METRIC_UNIT[g.metric] || ''}` : '') + `</div></div>`;
+    });
+    // 每日目标建议：第一个未完成的一轮目标与当前每日目标差 ≥20% 时给一键调整
+    const sug = perDays.find(x => x.g.metric === 'new' && x.perDay);
+    if (sug) {
+      const cur = getDailyGoal();
+      if (Math.abs(sug.perDay - cur) / Math.max(cur, 1) >= 0.2) {
+        html += `<div class="goal-hint">按「${esc(shorten(sug.g.title, 14))}」的节奏每天约 ${sug.perDay} 题，` +
+          `当前每日目标是 ${cur} 题 <button data-fixgoal="${sug.perDay}">调整</button></div>`;
+      }
+    }
+    box.innerHTML = html;
+    box.classList.remove('hidden');
+  }
+  // 计划弹层：考试信息表单 + 目标清单（manual 可勾选完成，任何目标可删）
+  function openPlanModal() {
+    safe((async () => {
+      const exam = await DB.getExam();
+      $('#examName').value = exam ? exam.name : '';
+      $('#examDate').value = exam ? exam.date : '';
+      await renderGoalList();
+      $('#planModal').classList.remove('hidden');
+    })(), '打开计划失败');
+  }
+  async function renderGoalList() {
+    const box = $('#goalList'); if (!box) return;
+    const goals = await DB.listGoals();
+    if (!goals.length) {
+      box.innerHTML = '<div class="muted" style="font-size:13px">还没有目标——手动添加一条，或点下方「生成建议计划」。</div>';
+      return;
+    }
+    const data = await goalDataSnapshot();
+    box.innerHTML = goals.map(g => {
+      const pr = DB.goalProgress(g, data);
+      const left = DB.daysBetween(todayStr(), g.deadline);
+      const done = pr.done >= pr.target;
+      return `<div class="pg-item">` +
+        `<div class="pg-top"><span class="pg-title">${done ? '✅ ' : ''}${esc(g.title)}</span>` +
+        `<span class="pg-meta">${esc(g.deadline || '—')} · ${left >= 0 ? '剩 ' + left + ' 天' : '已到期'}</span></div>` +
+        `<div class="pg-meta">${METRIC_LABEL[g.metric] || g.metric}：${pr.done} / ${pr.target}` +
+        (g.metric !== 'manual' && !done && left > 0
+          ? `（每天 ${Math.ceil(Math.max(0, pr.target - pr.done) / left)} ${METRIC_UNIT[g.metric] || ''}）` : '') + `</div>` +
+        `<div class="pg-ops">` +
+        (g.metric === 'manual'
+          ? `<button data-toggle="${g.id}">${g.manualDone ? '↩︎ 标记未完成' : '✔ 标记完成'}</button>` : '') +
+        `<button class="pg-del" data-del="${g.id}">删除</button></div></div>`;
+    }).join('');
+  }
+
   // 详情页：近 14 天每日做题量，纯 CSS 条形（零依赖，不引图表库）
   async function renderBankChart() {
     const box = $('#bankChart'); if (!box) return;
@@ -222,7 +334,11 @@
     S.selectedChapter = null;
     S.pendingMode = null;
     $('#title').textContent = bank.name;
+    // v27：题库页给出「‹ 首页」——此前返回按钮在题库页被隐藏，回首页只能重开 App；
+    // 配合首页的考试倒计时卡，这里必须能一键回去
     setBack('home');
+    $('#backBtn').classList.remove('hidden');
+    $('#backBtn').textContent = '‹ 首页';
     renderBankSwitch(bank.id);
     $('#rangeBar').classList.add('hidden');
     clearModeSel();
@@ -279,9 +395,12 @@
     S.questions.forEach(q => cnt[q.type] = (cnt[q.type] || 0) + 1);
     const parts = Object.keys(cnt).map(k => `${TYPE_LABEL[k] || k} ${cnt[k]}`);
     const m = await computeMastery(S.bank.id, S.questions.length);
+    // v26：今日只看本库（跨库总和在首页统计卡），让目标进度在题库页也可见
+    const sess = (await DB.listSessions(S.bank.id)) || [];
+    const today = (DB.dailyCounts(sess, 1)[0] || {}).count || 0;
     $('#bankStats').innerHTML =
       `<div class="sum-main"><b>${S.questions.length}</b> 题 · ${esc(parts.join(' / ') || '—')}</div>` +
-      `<div class="sum-sub">已练 ${m.practiced} 题 · 掌握 ${m.mastered} 题 · 掌握度 ${m.pct}%</div>` +
+      `<div class="sum-sub">已练 ${m.practiced} 题 · 掌握 ${m.mastered} 题 · 掌握度 ${m.pct}% · 今日 ${today} 题</div>` +
       `<div class="master-bar"><span style="width:${m.pct}%"></span></div>`;
   }
 
@@ -1170,6 +1289,10 @@
     // 结果已经渲染出来了再写库，存储失败不会挡住看成绩；失败只提示
     await safe(DB.bulkUpdateProgress(S.bank.id, updates, 'exam'), '保存成绩失败');
     safe(DB.logSessions(sessList), '记录作答流水失败');
+    // v27：整卷模拟 +1（考试计划「冲刺」目标口径，v27 起累计）
+    safe((async () => {
+      await DB.setMeta('mockCount', ((await DB.getMeta('mockCount')) || 0) + 1);
+    })(), '记录模拟次数失败');
   }
 
   // ---------- 练习范围选择 ----------
@@ -1565,7 +1688,14 @@
 
   // ---------- 事件绑定 ----------
   function bind() {
-    $('#backBtn').onclick = () => { if (S.back === 'bank') openBank(S.bank.id); else { $('#title').textContent = '卡片题库'; renderHome(); } };
+    $('#backBtn').onclick = () => {
+      if (S.back === 'bank') openBank(S.bank.id);
+      else {                                   // v27 修复：题库页「‹ 首页」真的切回首页（原来只重渲列表没切视图）
+        $('#title').textContent = '国际法题库';
+        showView('home');
+        safe(renderHome(), '刷新列表失败');
+      }
+    };
     const fi = $('#fileInput');
     $('#dropZone').onclick = () => fi.click();
     // v18：先取快照再清 input —— value='' 会当场清空 FileList，
@@ -1679,6 +1809,7 @@
     }
     $('#sfxOnSeg').querySelectorAll('button').forEach(b => b.onclick = () => {
       SFX.setEnabled(b.dataset.v === '1');
+      $('#sfxOnSeg').querySelectorAll('button').forEach(x => x.classList.toggle('on', x === b));
       syncSfxBtn();
       if (SFX.enabled()) SFX.right();      // 开启即给个样品
     });
@@ -1709,13 +1840,63 @@
     });
     $('#goalModalClose').onclick = () => $('#goalModal').classList.add('hidden');
     $('#goalModal').onclick = (e) => { if (e.target === $('#goalModal')) $('#goalModal').classList.add('hidden'); };
+    // v27：考试计划弹层 —— 考试信息 / 目标增删勾 / 一键三阶段
+    $('#examSave').onclick = () => safe((async () => {
+      const date = $('#examDate').value;
+      if (!date) { toast('先选考试日期'); return; }
+      await DB.setExam({ name: $('#examName').value.trim() || '考试', date: date });
+      toast('考试信息已保存');
+      safe(renderExamCard(), '刷新计划失败');
+    })(), '保存考试信息失败');
+    $('#goalAdd').onclick = () => safe((async () => {
+      const title = $('#goalTitle').value.trim();
+      const deadline = $('#goalDeadline').value;
+      const metric = $('#goalMetric').value;
+      let target = parseInt($('#goalTarget').value, 10) || 0;
+      if (!title || !deadline) { toast('目标名和截止日期都要填'); return; }
+      if (metric === 'manual') target = 1;
+      else if (metric !== 'wrong' && !target) { toast('填一下目标数量'); return; }
+      await DB.saveGoal({ id: DB.uid(), title: title, deadline: deadline, metric: metric, target: target, scope: 'all' });
+      $('#goalTitle').value = ''; $('#goalTarget').value = '';
+      await renderGoalList();
+      safe(renderExamCard(), '刷新计划失败');
+    })(), '添加目标失败');
+    $('#goalList').addEventListener('click', (e) => safe((async () => {
+      const t = e.target;
+      if (t.dataset.del) {
+        await DB.deleteGoal(t.dataset.del);
+        await renderGoalList();
+        safe(renderExamCard(), '刷新计划失败');
+      } else if (t.dataset.toggle) {
+        const g = (await DB.listGoals()).find(x => x.id === t.dataset.toggle);
+        if (g) { g.manualDone = !g.manualDone; await DB.saveGoal(g); await renderGoalList(); }
+      }
+    })(), '目标操作失败'));
+    $('#planGen').onclick = () => safe((async () => {
+      const exam = await DB.getExam();
+      if (!exam) { toast('先保存考试日期，再生成计划'); return; }
+      const sug = DB.planExamGoals(todayStr(), exam.date, await goalDataSnapshot());
+      if (!sug.length) { toast('考试日期已是今天或已过，改一下吧'); return; }
+      const have = (await DB.listGoals()).length;
+      if (have && !confirm('已有 ' + have + ' 个目标，仍追加这 ' + sug.length + ' 条建议目标吗？')) return;
+      for (const g of sug) await DB.saveGoal(Object.assign({ id: DB.uid() }, g));
+      toast('已生成 ' + sug.length + ' 条目标（可在列表里删除/微调日期）');
+      await renderGoalList();
+      safe(renderExamCard(), '刷新计划失败');
+    })(), '生成计划失败');
+    $('#planModalClose').onclick = () => $('#planModal').classList.add('hidden');
+    $('#planModal').onclick = (e) => { if (e.target === $('#planModal')) $('#planModal').classList.add('hidden'); };
     // v24：PWA 更新提示 —— 本项目 sw.js 自带 skipWaiting+claim：新版装好后立即接管本页，
     // 但页面资源还是旧的。所以监听 controllerchange（接管信号）弹底部提示条，点「刷新」即用上
     if ('serviceWorker' in navigator) {
       const swc = navigator.serviceWorker;
-      const hadController = !!swc.controller;   // 首次安装（之前无 SW）不算「更新」，不弹
+      // v27 修竞态：原来是启动时一次性快照（const），首装接管若发生在 bind 之后，
+      // hadController 永远是 false，之后的真更新也弹不出条。改成动态标记：
+      // 第一次接管（首装）静默；此后任何接管都是「更新」
+      let hadController = !!swc.controller;
       swc.addEventListener('controllerchange', () => {
         if (hadController) $('#updateBar').classList.remove('hidden');
+        hadController = true;
       });
       // 兜底：打开页面时新版已在 waiting（理论上不会发生，防御性保留）
       swc.getRegistration().then((reg) => {

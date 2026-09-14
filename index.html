@@ -26,6 +26,8 @@
 
   <!-- 首页：题库列表 + 导入 -->
   <div class="view" id="view-home">
+    <!-- v27：考试倒计时 + 目标计划卡（考试日期/目标未设置时显示引导行），由 renderExamCard 填充 -->
+    <div id="examCard" class="exam-card hidden"></div>
     <!-- F2：全站累计统计卡（题数/时长/连续打卡），由 renderHomeStats 填充 -->
     <div id="homeStats" class="home-stats hidden"></div>
     <div class="seg" id="importSeg" style="margin-bottom:14px">
@@ -171,7 +173,7 @@
       </div>
       <div class="field"><label>音效包（切换即试听）</label>
         <div class="seg" id="packSeg">
-          <button data-v="crisp">清脆</button><button data-v="soft">柔和</button><button data-v="wood">木质</button>
+          <button data-v="crisp">清脆</button><button data-v="soft">柔和</button><button data-v="wood">木质</button><button data-v="retro">怀旧</button>
         </div>
       </div>
       <div class="field hidden" id="vibeField"><label>震动（做完一题 / 答错时轻震）</label>
@@ -202,6 +204,37 @@
         <button data-v="100">100 题</button><button data-v="150">150 题</button>
       </div>
       <button class="btn ghost" id="goalModalClose">关闭</button>
+    </div>
+  </div>
+
+  <!-- v27：考试计划（考试日期 + 多目标 + 一键三阶段生成），内容由 app.js 渲染 -->
+  <div class="modal-mask hidden" id="planModal">
+    <div class="modal-card plan-card">
+      <h3>⏳ 考试计划</h3>
+      <div class="field"><label>考试名称</label>
+        <input type="text" id="examName" placeholder="如：00247 国际法" maxlength="40">
+      </div>
+      <div class="field"><label>考试日期</label>
+        <input type="date" id="examDate">
+      </div>
+      <button class="btn secondary" id="examSave" style="width:100%">保存考试信息</button>
+      <div class="plan-list" id="goalList"></div>
+      <div class="field"><label>添加目标</label>
+        <input type="text" id="goalTitle" placeholder="目标，如：名词解释全部背完" maxlength="60">
+        <div class="plan-row">
+          <input type="date" id="goalDeadline">
+          <select id="goalMetric">
+            <option value="new">累计做题数</option>
+            <option value="wrong">错题清零</option>
+            <option value="mock">整卷模拟次数</option>
+            <option value="manual">手动勾选</option>
+          </select>
+        </div>
+        <input type="number" id="goalTarget" placeholder="数量（错题清零/手动可留空）" min="1" inputmode="numeric">
+        <button class="btn secondary" id="goalAdd" style="width:100%;margin-top:8px">＋ 添加目标</button>
+      </div>
+      <button class="btn" id="planGen" style="width:100%">✨ 生成建议计划（三阶段）</button>
+      <button class="btn ghost" id="planModalClose">关闭</button>
     </div>
   </div>
 

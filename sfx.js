@@ -7,6 +7,10 @@
  *   - 震动：navigator.vibrate（安卓/部分浏览器可用；iOS Safari 不支持——设置里照常可关，
  *     不支持的设备上 UI 层会隐藏该选项）
  *   - 偏好全部记 localStorage：sfx-off / sfx-pack / vibe-off
+ * v26（2026-09-14）：
+ *   - 第四组「怀旧」包：早期 QQ 梗系列——翻卡=游戏大厅切桌「刷刷刷」，答对=「滴滴」，
+ *     答错=系统消息「咳咳」，完成=好友上线「咚咚」敲门。走 pack.synth 自定义合成，
+ *     其余三包仍是参数化 tone/noise 老路径
  *
  * 工程约束不变：
  *   - AudioContext 懒创建，首次手势 warm()（iOS 自动播放策略）
@@ -33,13 +37,38 @@
   }
 
   // ---- 音效包定义：wave 正答波形 / wrongWave 错答波形 / 频率组 / flip 噪声扫频区间 / vol 音量系数 ----
+  // retro 走 synth：事件 → 自定义合成函数（见下方积木），给「怀旧 QQ」系列用
   var PACKS = {
     crisp: { label: '清脆', wave: 'sine',     wrongWave: 'triangle', vol: 1,
              right: [659, 880], wrong: [220, 150], done: [523, 659, 784], warn: 880, neutral: 440, flip: [900, 2600] },
     soft:  { label: '柔和', wave: 'triangle', wrongWave: 'sine',     vol: 0.8,
              right: [494, 587], wrong: [175, 131], done: [392, 494, 587], warn: 660, neutral: 330, flip: [400, 1400] },
     wood:  { label: '木质', wave: 'square',   wrongWave: 'square',   vol: 0.5,
-             right: [988, 1319], wrong: [147, 110], done: [784, 988, 1319], warn: 1047, neutral: 494, flip: [700, 2000] }
+             right: [988, 1319], wrong: [147, 110], done: [784, 988, 1319], warn: 1047, neutral: 494, flip: [700, 2000] },
+    retro: { label: '怀旧', vol: 0.9,
+             synth: {
+               flip: function () {                 // QQ游戏大厅切桌「刷-刷-刷」
+                 retroWhoosh(0, 1300, 2500);
+                 retroWhoosh(105, 1500, 2700);
+                 retroWhoosh(210, 1700, 2900);
+               },
+               right: function () {                // 经典「滴滴」消息音
+                 retroBlip(988, 0); retroBlip(988, 95);
+               },
+               wrong: function () {                // 系统消息「咳、咳」
+                 retroCoughBurst(0, 780, 300, 0.10, 1.6);
+                 retroCoughBurst(165, 660, 250, 0.13, 1.6);
+               },
+               neutral: function () { retroKnock(0); },   // 单声「咚」
+               warn: function () {                  // 闹钟式「滴滴滴滴」
+                 retroBlip(1175, 0); retroBlip(1175, 110);
+                 retroBlip(1175, 220); retroBlip(1175, 330);
+               },
+               done: function () {                  // 好友上线「咚咚」+ 收尾上扬「滴滴」
+                 retroKnock(0); retroKnock(150);
+                 retroBlip(988, 420); retroBlip(1319, 515);
+               }
+             } }
   };
   function packOf(id) { return PACKS[id] || PACKS.crisp; }
 
@@ -79,8 +108,9 @@
     } catch (e) {}
   }
 
-  // 「刷刷」纸声：白噪声 + 带通滤波扫频（扫频区间随音效包走）
-  function noise(dur, gain, from, to) {
+  // 「刷刷」纸声：白噪声 + 带通滤波扫频（扫频区间随音效包走）；q 可调带宽，怀旧包的
+  // 「咳咳」要更窄的带通才有喉音感，其余场景维持老的 0.8
+  function noise(dur, gain, from, to, q) {
     var c = ac();
     if (!c || !_enabled) return;
     try {
@@ -92,7 +122,7 @@
       for (var i = 0; i < len; i++) d[i] = Math.random() * 2 - 1;
       var src = c.createBufferSource(); src.buffer = buf;
       var bp = c.createBiquadFilter();
-      bp.type = 'bandpass'; bp.Q.value = 0.8;
+      bp.type = 'bandpass'; bp.Q.value = q || 0.8;
       bp.frequency.setValueAtTime(from || p.flip[0], t);
       bp.frequency.exponentialRampToValueAtTime(to || p.flip[1], t + dur);
       var g = c.createGain();
@@ -102,6 +132,32 @@
       src.connect(bp); bp.connect(g); g.connect(c.destination);
       src.start(t); src.stop(t + dur + 0.02);
     } catch (e) {}
+  }
+
+  // ---- v26 怀旧包积木：全部复用 tone/noise（音量系数、异常兜底、enabled 短路都继承）----
+  function retroBlip(freq, delayMs) {         // 「滴」：短促方波，2000 年提示音的味道
+    setTimeout(function () { tone(freq, 0.075, { type: 'square', gain: 0.045 }); }, delayMs);
+  }
+  function retroKnock(delayMs) {              // 「咚」：低频正弦下坠 + 一点起振噪声当敲击感
+    setTimeout(function () {
+      tone(185, 0.11, { type: 'sine', gain: 0.16, slideTo: 98 });
+      noise(0.03, 0.10, 2200, 1600);
+    }, delayMs);
+  }
+  function retroWhoosh(delayMs, from, to) {   // 「刷」：一声带通噪声扫频，三连就是切桌
+    setTimeout(function () { noise(0.07, 0.13, from, to); }, delayMs);
+  }
+  function retroCoughBurst(delayMs, from, to, dur, q) {  // 「咳」：带通噪声下坠 + 低频锯齿衬底
+    setTimeout(function () {
+      noise(dur, 0.20, from, to, q);
+      tone(150, dur, { type: 'sawtooth', gain: 0.05, slideTo: 95 });
+    }, delayMs);
+  }
+  // 当前包若有该事件的自定义合成则执行之；返回是否已接管（接管后震动仍由外层统一给）
+  function playSynth(name) {
+    var s = packOf(_pack).synth;
+    if (s && s[name]) { s[name](); return true; }
+    return false;
   }
 
   // 震动（安卓/部分浏览器；iOS Safari 无此 API，调了也只是无效，不会报错）
@@ -119,7 +175,7 @@
       writeKey('sfx-off', on ? '0' : '1');
       return _enabled;
     },
-    /** 当前音效包 id（crisp/soft/wood） */
+    /** 当前音效包 id（crisp/soft/wood/retro） */
     getPack: function () { return _pack; },
     /** 换包（未知 id 回落 crisp）；返回生效的包 id */
     setPack: function (id) {
@@ -142,25 +198,32 @@
     },
     /** 首次手势时调用，把 AudioContext 建好（iOS 策略） */
     warm: function () { ac(); },
-    flip: function () { noise(0.14, 0.10); },                       // 翻卡「刷刷」
+    flip: function () { if (playSynth('flip')) return; noise(0.14, 0.10); },   // 翻卡「刷刷」/ 怀旧「刷刷刷」
     right: function () {                                            // 答对：双连音 + 轻震
+      if (playSynth('right')) { vibe(15); return; }
       var f = packOf(_pack).right;
       tone(f[0], 0.09, { gain: 0.07 });
       setTimeout(function () { tone(f[1], 0.12, { gain: 0.07 }); }, 70);
       vibe(15);
     },
     wrong: function () {                                            // 答错：低频下落 + 三段震
+      if (playSynth('wrong')) { vibe([40, 60, 40]); return; }
       var f = packOf(_pack).wrong;
       tone(f[0], 0.18, { slideTo: f[1], gain: 0.09 });
       vibe([40, 60, 40]);
     },
-    neutral: function () { tone(packOf(_pack).neutral, 0.06, { gain: 0.04 }); },
+    neutral: function () {
+      if (playSynth('neutral')) return;
+      tone(packOf(_pack).neutral, 0.06, { gain: 0.04 });
+    },
     warn: function () {
+      if (playSynth('warn')) return;
       var f = packOf(_pack).warn;
       tone(f, 0.16, { gain: 0.08 });
       setTimeout(function () { tone(f, 0.16, { gain: 0.08 }); }, 220);
     },
     done: function () {                                             // 完成：三连音 + 收尾震
+      if (playSynth('done')) { vibe([15, 25, 15, 25, 35]); return; }
       var f = packOf(_pack).done;
       tone(f[0], 0.10, { gain: 0.07 });
       setTimeout(function () { tone(f[1], 0.10, { gain: 0.07 }); }, 90);
