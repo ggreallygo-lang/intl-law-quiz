@@ -6,7 +6,10 @@
   // 所有按钮的按压反馈在 iPhone 上就都有了（安卓本来就有，不受影响）
   document.addEventListener('touchstart', function () {}, { passive: true });
   // v22：首次手势预热音频引擎（iOS 自动播放策略），之后程序触发的音（考试告警）才出得了声
-  document.addEventListener('pointerdown', function () { if (window.SFX) SFX.warm(); }, { once: true, passive: true });
+  document.addEventListener('pointerdown', function () {
+    if (window.SFX) SFX.warm();
+    if (window.BGM) BGM.resume();   // v28：背景音乐开着时借首次手势起播（iOS 策略）
+  }, { once: true, passive: true });
   const TYPE_LABEL = {
     single: '单选题', multiple: '多选题', judge: '判断题',
     term: '名词解释', fill: '填空题', essay: '简答题'
@@ -837,7 +840,7 @@
     // opts.all：错题本进来时不按记忆曲线过滤，错的全部过一遍
     let due = opts.all ? S.pool.slice() : S.pool.filter(q => !map[q.id] || map[q.id].due <= now);
     if (!due.length) due = S.pool.slice(); // 全部复习完 -> 全部过一遍
-    mem = { list: shuffle(due), i: 0, map, startAt: Date.now(), timer: null, title: opts.title || '背题' };
+    mem = { list: shuffle(due), i: 0, map, startAt: Date.now(), timer: null, title: opts.title || '背题', maxSeen: 1, skippedN: 0, review: false };
     setBack('bank', '‹ 题库');
     $('#title').textContent = opts.title || '背题';
     renderMemorize();
@@ -850,13 +853,21 @@
       stopTimer(mem);                     // v21：本轮计时停止
       clearResume();                      // v23：背完清档
       SFX.done();                         // v22：背完收尾音
-      view.innerHTML = `<div class="empty"><div style="font-size:40px">🎉</div>本轮背完啦！<br><span class="muted">按记忆曲线，该复习的都过了一遍 · 用时 ${used}</span></div>
+      view.innerHTML = `<div class="empty"><div style="font-size:40px">🎉</div>本轮背完啦！<br><span class="muted">按记忆曲线，该复习的都过了一遍 · 用时 ${used}` +
+        (mem.skippedN ? ` · 跳过 ${mem.skippedN} 张（仍按原曲线安排）` : '') + `</span></div>
         <button class="btn" onclick="location.reload()">返回</button>`;
       return;
     }
     const q = mem.list[mem.i];
     const total = mem.list.length;
     saveResume('memorize', mem);     // v23：每卡存档，退出可续
+    // v28：卡片带章节路径面包屑（背书场景一眼知道在背哪个岗位的话术）
+    const chapterLine = (q.chapterPath && q.chapterPath.length)
+      ? `<div class="card-chapter">📖 ${esc(q.chapterPath.join(' › '))}</div>` : '';
+    // v28：答案面把题目再显示一遍——翻面后不用来回翻就能对着问题背答案
+    const stemMini = (q.type === 'term')
+      ? `<div class="card-stem-mini">${esc(q.term)}</div>`
+      : `<div class="card-stem-mini">${esc(q.stem)}</div>`;
     let front = '', back = '';
     if (q.type === 'term') {
       front = `<div class="tag">名词解释</div><div class="stem">${esc(q.term)}</div>`;
@@ -880,12 +891,17 @@
       `<div class="study-body slide-in">` +
       `<div class="flip3d" id="card">` +
         `<div class="flip3d-inner">` +
-          `<div class="flip-face flip-front">${front}</div>` +
-          `<div class="flip-face flip-back"><div class="tag">答案</div>${back}</div>` +
+          `<div class="flip-face flip-front">${chapterLine}${front}</div>` +
+          `<div class="flip-face flip-back">${chapterLine}<div class="tag">答案</div>${stemMini}${back}</div>` +
         `</div>` +
       `</div>` +
       `<div class="flip-hint" id="flipHint">点击卡片或下方按钮翻面看答案</div>` +
       `<button class="btn" id="flipBtn" style="margin-top:14px">显示答案</button>` +
+      // v28：上一题（回看）/ 跳过（不评分、按原记忆曲线明天再来）
+      `<div class="btn-row" style="margin-top:10px">` +
+        `<button class="btn secondary" id="memPrev"${mem.i === 0 ? ' disabled' : ''}>‹ 上一题</button>` +
+        `<button class="btn secondary" id="memSkip">跳过 ›</button>` +
+      `</div>` +
       `<div id="rateArea" class="hidden">` +
       `<div class="rate-row">` +
       `<button class="btn rate-forget" data-q="1">😵 忘记</button>` +
@@ -893,6 +909,10 @@
       `<button class="btn rate-know" data-q="5">😎 记住</button>` +
       `</div></div>` +
       `</div>`;
+    // v28：回看判定——处于回看状态且还没走到最前的那张卡时，只展示不评分
+    mem.maxSeen = Math.max(mem.maxSeen || 1, mem.i + 1);
+    if (mem.i >= (mem.maxSeen || 1) - 1) mem.review = false;
+    const reviewing = !!mem.review && mem.i < (mem.maxSeen || 1) - 1;
     let flipped = false;
     const flip = () => {
       if (flipped) return;                 // 翻面只触发一次
@@ -907,10 +927,32 @@
       ra.classList.remove('hidden');
       ra.classList.add('fade-in');         // 自评按钮组淡入，避免"啪"地出现
     };
-    mem.renderedAt = Date.now();   // F2：展示→自评的耗时起点
-    startTimerChip(mem);           // v21：本轮用时 chip
-    $('#flipBtn').onclick = flip;
-    $('#card').onclick = flip;
+    $('#memPrev').onclick = () => {
+      if (mem.locked || mem.i === 0) return;
+      mem.locked = true;
+      mem.review = true;
+      mem.i--; renderMemorize();
+    };
+    $('#memSkip').onclick = () => {
+      if (mem.locked) return;
+      mem.locked = true;
+      SFX.flip();
+      mem.skippedN = (mem.skippedN || 0) + 1;
+      mem.i++; renderMemorize();
+    };
+    if (reviewing) {
+      // 回看：直接翻到答案面、不出评分按钮（评分会重复写 SM-2，回看只看不改）
+      flipped = true;
+      $('#card').classList.add('flipped');
+      $('#flipBtn').classList.add('hidden');
+      $('#flipHint').textContent = '📖 回看上一张 · 用下方按钮继续，回到最前一张后恢复评分';
+      $('#flipHint').classList.remove('hidden');
+    } else {
+      mem.renderedAt = Date.now();   // F2：展示→自评的耗时起点
+      $('#flipBtn').onclick = flip;
+      $('#card').onclick = flip;
+    }
+    startTimerChip(mem);           // v21：本轮用时 chip（回看也照常走会话计时）
     $('#rateArea').querySelectorAll('button').forEach(b => {
       b.onclick = async () => {
         if (mem.locked) return;            // v14：写库期间锁点击，防连点连跳两题
@@ -934,7 +976,7 @@
   async function startPractice(opts) {
     opts = opts || {};
     stopTimer(prac);                        // v21：防上一轮的 interval 泄漏
-    prac = { list: shuffle(S.pool), i: 0, wrong: [], correct: 0, wrongIds: [], title: opts.title || '刷题', startAt: Date.now(), timer: null };
+    prac = { list: shuffle(S.pool), i: 0, wrong: [], correct: 0, wrongIds: [], skipped: [], results: [], title: opts.title || '刷题', startAt: Date.now(), timer: null };
     setBack('bank', '‹ 题库');
     $('#title').textContent = prac.title;
     renderPractice();
@@ -976,20 +1018,40 @@
         opts.map(o => `<div class="option" data-k="${o.key}"><span class="key">${o.key}</span> ${esc(o.text)}</div>`).join('');
     }
     // v14：题干+选项包一层 .slide-in，切题时从右侧滑入，不再是"啪"地整屏替换
+    // v28：导航行常驻（上一题 / 跳过）；results[i] 有作答记录时进「回看」模式
+    const rec = prac.results && prac.results[prac.i];
     view.innerHTML =
       `<div class="progress-top"><span class="pnum">${prac.i + 1}/${total}</span>` +
       `<span class="mtimer" id="mtTimer">⏱ ${fmtElapsed(Date.now() - (prac.startAt || Date.now()))}</span>` +
       `<div class="progress-bar"><span style="width:${(prac.i / total) * 100}%"></span></div></div>` +
       `<div class="study-body slide-in">${body}</div>` +
-      `<div id="pracFeedback"></div><div id="nextWrap" class="hidden"><button class="btn" id="nextBtn">下一题 ›</button></div>`;
+      `<div id="pracFeedback"></div>` +
+      `<div id="pracNav" class="btn-row" style="margin-top:14px">` +
+        `<button class="btn secondary" id="prevQBtn"${prac.i === 0 ? ' disabled' : ''}>‹ 上一题</button>` +
+        `<button class="btn secondary" id="skipBtn">跳过 ›</button>` +
+      `</div>` +
+      `<div id="nextWrap" class="hidden" style="margin-top:10px"><button class="btn" id="nextBtn" style="width:100%">下一题 ›</button></div>`;
     startTimerChip(prac);           // v21：本轮用时 chip
+    $('#prevQBtn').onclick = () => {
+      if (prac.locked || prac.i === 0) return;
+      prac.locked = true;
+      prac.i--; renderPractice();          // 已答过的题以回看态呈现
+    };
+    $('#skipBtn').onclick = () => {
+      if (prac.locked) return;
+      prac.locked = true;
+      SFX.flip();
+      if (prac.results[prac.i] !== 'skip') prac.skipped.push(q.id);
+      prac.results[prac.i] = 'skip';
+      prac.i++; renderPractice();
+    };
 
     // 自评题（名词解释 / 简答 / 长答案填空）
     if (Scoring.isSelfAssess(q)) {
       $('#revealTerm').onclick = () => {
         $('#termBack').classList.remove('hidden'); $('#revealTerm').classList.add('hidden');
-        $('#tRight').onclick = () => finishPractice(q, true);
-        $('#tWrong').onclick = () => finishPractice(q, false);
+        $('#tRight').onclick = () => finishPractice(q, true, '自评');
+        $('#tWrong').onclick = () => finishPractice(q, false, '自评');
       };
       return;
     }
@@ -1004,7 +1066,7 @@
         // 判分走 scoring：归一化后比较，忽略空格/标点/全角半角
         const right = Scoring.isRight(q, v);
         inp.classList.add(right ? 'fill-right' : 'fill-wrong');
-        finishPractice(q, right);
+        finishPractice(q, right, v);
       };
       $('#fillSubmit').onclick = submit;
       $('#fillInput').onkeydown = (e) => { if (e.key === 'Enter') submit(); };
@@ -1031,11 +1093,52 @@
         // v14：答对 → 正确项弹一下；答错 → 选中项抖一下。在解析文字出来之前先给到"手感"
         if (right) view.querySelectorAll('.option.correct').forEach(o => o.classList.add('pop'));
         else op.classList.add('shake');
-        finishPractice(q, right);
+        finishPractice(q, right, picked);
       };
     });
+
+    // v28：回看模式 —— 这一题已做过（results[i] 是作答记录）：锁选项、复放反馈，不重复计分
+    if (rec && rec !== 'skip') {
+      const rOpts = view.querySelectorAll('.option');
+      rOpts.forEach(o => o.classList.add('locked'));
+      if (q.type === 'judge') {
+        const want = q.answer ? '1' : '0';
+        rOpts.forEach(o => {
+          if (o.dataset.v === want) o.classList.add('correct');
+          if (String(rec.picked) === o.dataset.v) { o.classList.add('chosen'); if (!rec.right) o.classList.add('wrong'); }
+        });
+      } else if (q.type === 'single' || q.type === 'multiple') {
+        const keys = Scoring.answerKeys(q);
+        rOpts.forEach(o => {
+          if (keys.indexOf(String(o.dataset.k).toUpperCase()) >= 0) o.classList.add('correct');
+          if ([].concat(rec.picked).map(String).indexOf(o.dataset.k) >= 0) { o.classList.add('chosen'); if (!rec.right) o.classList.add('wrong'); }
+        });
+      } else if (q.type === 'fill') {
+        const inp = $('#fillInput');
+        if (inp) { inp.value = rec.picked || ''; inp.disabled = true; }
+        const fb = $('#fillSubmit'); if (fb) fb.disabled = true;
+      } else if (Scoring.isSelfAssess(q)) {
+        // 自评题：自动展开答案，撤掉评分按钮（只看不改）
+        if ($('#revealTerm')) $('#revealTerm').click();
+        const tr = $('#tRight'), tw = $('#tWrong');
+        if (tr) tr.outerHTML = `<span class="muted" style="font-size:13px">${rec.right ? '✓ 当时答对' : '✗ 当时没答对'}</span>`;
+        if (tw) tw.outerHTML = '';
+      }
+      $('#pracFeedback').innerHTML = rec.right
+        ? `<div class="feedback ok">✓ 答对（回看）${q.explanation ? `<span class="sub">解析：${esc(q.explanation)}</span>` : ''}</div>`
+        : `<div class="feedback bad">✗ 答错（回看），正确答案：${esc(Scoring.answerText(q))}${q.explanation ? `<span class="sub">解析：${esc(q.explanation)}</span>` : ''}</div>`;
+      $('#nextWrap').classList.remove('hidden');
+      $('#skipBtn').classList.add('hidden');
+      $('#nextBtn').textContent = prac.i + 1 >= total ? '查看结果 ›' : '下一题 ›';
+      $('#nextBtn').onclick = () => {
+        if (prac.locked) return;
+        prac.locked = true;
+        SFX.flip();
+        prac.i++; renderPractice();
+      };
+    }
   }
-  async function finishPractice(q, right) {
+  async function finishPractice(q, right, picked) {
     if (right) SFX.right(); else SFX.wrong();   // v22：判分音效（选项/填空/自评三条路都汇到这里）
     const fb = $('#pracFeedback');
     let html = right
@@ -1046,10 +1149,16 @@
     }
     fb.innerHTML = html;
     if (right) prac.correct++; else prac.wrongIds.push(q.id);
+    // v28：记作答记录（回看用）；回看补答跳过的题要把它从跳过清单里捞回来
+    const wasSkip = prac.results[prac.i] === 'skip';
+    prac.results[prac.i] = { right: right, picked: picked };
+    if (wasSkip) prac.skipped = prac.skipped.filter(id => id !== q.id);
     safe(DB.logSessions([{ bankId: S.bank.id, qid: q.id, mode: 'practice', right: right, ms: Date.now() - (prac.renderedAt || Date.now()) }]), '记录作答流水失败');
 
     // 先让用户可以继续，再写库 —— 存储失败绝不能把人卡死在这一题
     $('#nextWrap').classList.remove('hidden');
+    $('#skipBtn').classList.add('hidden');
+    $('#nextBtn').textContent = prac.i + 1 >= prac.list.length ? '查看结果 ›' : '下一题 ›';
     // v14：锁一下，避免连点"下一题"跳掉两题
     $('#nextBtn').onclick = () => {
       if (prac.locked) return;
@@ -1078,28 +1187,41 @@
   }
   function renderPracticeResult() {
     const total = prac.list.length;
-    const acc = total ? Math.round(prac.correct / total * 100) : 0;
+    const skippedN = (prac.skipped || []).length;
+    const answered = prac.correct + prac.wrongIds.length;   // v28：跳过的不进正确率分母
+    const acc = answered ? Math.round(prac.correct / answered * 100) : 0;
     // v21：本轮用时 + 平均每题（复习错题重开的 prac 有自己的 startAt）
     const usedMs = Date.now() - (prac.startAt || Date.now());
     const used = fmtElapsed(usedMs);
-    const avg = total ? Math.max(1, Math.round(usedMs / 1000 / total)) : 0;
+    const avg = answered ? Math.max(1, Math.round(usedMs / 1000 / answered)) : 0;
     stopTimer(prac);
     clearResume();                         // v23：做完（含复习错题收尾）就清档
     SFX.done();                            // v22：刷完收尾音
     const view = $('#view-study');
     view.innerHTML =
-      `<div class="result-score">${acc}%</div><div class="result-sub">答对 ${prac.correct} / ${total} · 用时 ${used} · 平均 ${avg} 秒/题</div>` +
+      `<div class="result-score">${acc}%</div><div class="result-sub">答对 ${prac.correct} / 已答 ${answered}` +
+      (skippedN ? `（<b style="color:#c0392b">跳过 ${skippedN}</b>）` : '') + ` · 用时 ${used} · 平均 ${avg} 秒/题</div>` +
+      (skippedN
+        ? `<button class="btn" id="redoSkipped">⏭ 补做跳过的题（${skippedN}）</button><div style="height:10px"></div>`
+        : '') +
       (prac.wrongIds.length
         ? `<button class="btn" id="reviewWrong">🔁 复习错题（${prac.wrongIds.length}）</button>
            <div style="height:10px"></div>`
-        : `<div class="empty">全部答对，稳！</div>`) +
+        : `<div class="empty">${answered ? '全部答对，稳！' : '全部跳过了…再来一遍？'}</div>`) +
       `<button class="btn secondary" id="redoPrac">再做一遍</button><div style="height:10px"></div>
        <button class="btn ghost" id="backBank">返回题库</button>`;
+    if (skippedN) $('#redoSkipped').onclick = () => {
+      const map = {}; S.questions.forEach(q => map[q.id] = q);
+      const title = prac.title;
+      stopTimer(prac);
+      prac = { list: shuffle((prac.skipped || []).map(id => map[id]).filter(Boolean)), i: 0, wrong: [], correct: 0, wrongIds: [], skipped: [], results: [], title: title, startAt: Date.now(), timer: null };
+      renderPractice();
+    };
     if (prac.wrongIds.length) $('#reviewWrong').onclick = async () => {
       const map = {}; S.questions.forEach(q => map[q.id] = q);
       const title = prac.title;
       stopTimer(prac);
-      prac = { list: shuffle(prac.wrongIds.map(id => map[id]).filter(Boolean)), i: 0, wrong: [], correct: 0, wrongIds: [], title: title, startAt: Date.now(), timer: null };
+      prac = { list: shuffle(prac.wrongIds.map(id => map[id]).filter(Boolean)), i: 0, wrong: [], correct: 0, wrongIds: [], skipped: [], results: [], title: title, startAt: Date.now(), timer: null };
       renderPractice();
     };
     $('#redoPrac').onclick = () => startPractice({ title: prac.title });
@@ -1226,7 +1348,15 @@
       if (exam.i > 0) { exam.locked = true; accExamMs(); exam.i--; renderExam(); }
     };
     $('#nextExamBtn').onclick = () => {
-      if (exam.i + 1 >= total) { if (confirm('确定交卷？')) submitExam(); }
+      if (exam.i + 1 >= total) {
+        // v28：交卷前清点未作答——空答案/空数组都算没做完，明确提醒而不是默默按错计
+        const un = exam.list.filter(x => {
+          const a = exam.answers[x.id];
+          return !a || a.value == null || a.value === '' || (Array.isArray(a.value) && !a.value.length);
+        }).length;
+        const msg = un > 0 ? `还有 ${un} 题未作答，确定交卷吗？（未答按错计）` : '确定交卷？';
+        if (confirm(msg)) submitExam();
+      }
       else { if (exam.locked) return; exam.locked = true; accExamMs(); exam.i++; renderExam(); }
     };
     exam.enterTs = Date.now();
@@ -1653,7 +1783,7 @@
       (async () => {
         const progs = await DB.listProgress(S.bank.id);
         const map = {}; progs.forEach(p => map[p.qid] = p);
-        mem = { list: list, i: Math.min(r.i, list.length - 1), map, startAt: Date.now(), timer: null, title: r.title || '背题' };
+        mem = { list: list, i: Math.min(r.i, list.length - 1), map, startAt: Date.now(), timer: null, title: r.title || '背题', maxSeen: Math.min(r.i, list.length - 1) + 1, skippedN: 0, review: false };
         S.pool = list;
         setBack('bank', '‹ 题库');
         $('#title').textContent = mem.title;
@@ -1662,7 +1792,7 @@
     } else {
       stopTimer(prac);
       prac = { list: list, i: Math.min(r.i, list.length - 1), wrong: [], correct: r.correct || 0,
-               wrongIds: r.wrongIds || [], title: r.title || '刷题', startAt: Date.now(), timer: null };
+               wrongIds: r.wrongIds || [], skipped: [], results: [], title: r.title || '刷题', startAt: Date.now(), timer: null };
       S.pool = list;
       setBack('bank', '‹ 题库');
       $('#title').textContent = prac.title;
@@ -1805,6 +1935,15 @@
       const vibeOk = SFX.vibeSupported();
       $('#vibeField').classList.toggle('hidden', !vibeOk);
       if (vibeOk) setSeg($('#vibeSeg'), SFX.getVibe() ? '1' : '0');
+      // v28：背景音乐段——开关 + 曲目下拉（内置 + 本地导入）
+      if (window.BGM) {
+        setSeg($('#bgmOnSeg'), BGM.enabled() ? '1' : '0');
+        BGM.tracks().then(list => {
+          const sel = $('#bgmTrack');
+          sel.innerHTML = list.map(t => `<option value="${esc(t.id)}"${t.id === BGM.getTrack() ? ' selected' : ''}>${esc(t.label)}</option>`).join('');
+          $('#bgmDel').classList.toggle('hidden', list.every(t => t.builtin));
+        }).catch(() => {});
+      }
       $('#sfxModal').classList.remove('hidden');
     }
     $('#sfxOnSeg').querySelectorAll('button').forEach(b => b.onclick = () => {
@@ -1823,6 +1962,49 @@
       $('#vibeSeg').querySelectorAll('button').forEach(x => x.classList.toggle('on', x === b));
       if (SFX.getVibe()) SFX.done();        // 震动开关试一下收尾震感
     });
+    // v28：背景音乐 —— 开关 / 选曲 / 导入本地音乐 / 删除
+    $('#bgmOnSeg').querySelectorAll('button').forEach(b => b.onclick = () => {
+      if (!window.BGM) return;
+      BGM.setEnabled(b.dataset.v === '1');
+      $('#bgmOnSeg').querySelectorAll('button').forEach(x => x.classList.toggle('on', x === b));
+      if (BGM.enabled()) BGM.start();       // 开即起播（这次点击就是手势）
+    });
+    $('#bgmTrack').onchange = () => {
+      if (!window.BGM) return;
+      BGM.stop();
+      BGM.setTrack($('#bgmTrack').value);
+      if (BGM.enabled()) BGM.start();       // 换曲即播
+    };
+    $('#bgmAdd').onclick = () => $('#bgmFile').click();
+    $('#bgmFile').onchange = () => safe((async () => {
+      const f = $('#bgmFile').files && $('#bgmFile').files[0];
+      if (!f) return;
+      if (f.size > 20 * 1024 * 1024) { toast('音乐文件太大（限 20MB）'); return; }
+      const id = await BGM.addFile(f);
+      $('#bgmFile').value = '';
+      BGM.stop();
+      BGM.setTrack(id);
+      if (BGM.enabled()) BGM.start();
+      toast('已添加并播放：' + f.name.replace(/\.[^.]+$/, ''));
+      // 刷新下拉
+      const list = await BGM.tracks();
+      const sel = $('#bgmTrack');
+      sel.innerHTML = list.map(t => `<option value="${esc(t.id)}"${t.id === BGM.getTrack() ? ' selected' : ''}>${esc(t.label)}</option>`).join('');
+      $('#bgmDel').classList.toggle('hidden', list.every(t => t.builtin));
+    })(), '添加音乐失败');
+    $('#bgmDel').onclick = () => safe((async () => {
+      const id = $('#bgmTrack').value;
+      if (!id || id.indexOf('bgm-') !== 0) return;   // 内置曲不可删
+      if (!confirm('删除这首自定义音乐？')) return;
+      await BGM.removeCustom(id);
+      toast('已删除');
+      const list = await BGM.tracks();
+      const sel = $('#bgmTrack');
+      sel.innerHTML = list.map(t => `<option value="${esc(t.id)}"${t.id === BGM.getTrack() ? ' selected' : ''}>${esc(t.label)}</option>`).join('');
+      $('#bgmDel').classList.toggle('hidden', list.every(t => t.builtin));
+      BGM.stop();
+      if (BGM.enabled()) BGM.start();
+    })(), '删除音乐失败');
     $('#sfxModalClose').onclick = () => $('#sfxModal').classList.add('hidden');
     $('#sfxModal').onclick = (e) => { if (e.target === $('#sfxModal')) $('#sfxModal').classList.add('hidden'); };
     // v24：每日目标 —— 点首页「今日 x/y 题」行弹设置（renderHomeStats 重渲，用委托）

@@ -20,7 +20,7 @@
   'use strict';
 
   const DB_NAME = 'card-quiz';
-  const DB_VERSION = 4;
+  const DB_VERSION = 5;
   let _db = null;
   let _opening = null;          // 复用同一个 open Promise，避免并发时重复打开
 
@@ -86,6 +86,9 @@
         if (e.oldVersion < 3) ensureSessionsStore(db);
         // --- v3 -> v4：新增 goals 考试目标表 + meta 键值表（考试日期/模拟计数），只加表 ---
         if (e.oldVersion < 4) { ensureGoalsStore(db); ensureMetaStore(db); }
+        // --- v4 -> v5：新增 media 媒体表（背景音乐等本地音频 Blob），只加表；
+        //     刻意不进 dumpAll 备份——音乐文件可重新导入，不让备份 JSON 膨胀 ---
+        if (e.oldVersion < 5) ensureMediaStore(db);
       };
       // 另一个标签页正开着旧版本数据库 → 升级被阻塞。
       // 不处理的话界面会一直卡住且没有任何提示。
@@ -654,6 +657,35 @@
     db.createObjectStore('meta', { keyPath: 'key' });
     return true;
   }
+  // v28：媒体表（背景音乐 Blob 等），按 kind 索引
+  function ensureMediaStore(db) {
+    if (!db || !db.objectStoreNames || db.objectStoreNames.contains('media')) return false;
+    const s = db.createObjectStore('media', { keyPath: 'id' });
+    s.createIndex('kind', 'kind', { unique: false });
+    return true;
+  }
+  async function saveMedia(m) {
+    if (!m || !m.id || !m.kind) throw new Error('media 记录需含 id/kind');
+    const s = await tx('media', 'readwrite');
+    s.put(Object.assign({}, m, { updatedAt: Date.now() }));
+    await txDone(s.transaction);
+    return m.id;
+  }
+  async function getMedia(id) {
+    if (!id) return null;
+    return reqP((await tx('media', 'readonly')).get(id));
+  }
+  async function listMedia(kind) {
+    const s = await tx('media', 'readonly');
+    const out = kind ? await reqP(s.index('kind').getAll(IDBKeyRange.only(kind)))
+                     : await reqP(s.getAll());
+    return (out || []).filter(m => m && m.id);
+  }
+  async function deleteMedia(id) {
+    const s = await tx('media', 'readwrite');
+    s.delete(id);
+    await txDone(s.transaction);
+  }
 
   async function saveGoal(g) {
     if (!g || !g.id) throw new Error('goal.id 必填');
@@ -1045,7 +1077,8 @@
     mergeProgressRecords, pickBankRecord, planMerge, mergeAll,
     saveGoal, listGoals, deleteGoal, goalProgress, planExamGoals, mergeGoals,
     getExam, setExam, getMeta, setMeta, daysBetween, addDays,
-    ensureGoalsStore, ensureMetaStore,
+    ensureGoalsStore, ensureMetaStore, ensureMediaStore,
+    saveMedia, getMedia, listMedia, deleteMedia,
     setEventHandler, isQuotaError, uid
   };
 });

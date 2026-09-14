@@ -8,13 +8,13 @@
  *   2. 只缓存同源资源，且限制到 SHELL 白名单，避免缓存无限增长。
  *   3. 缓存前缀化：换版本时按前缀清理旧缓存，不再依赖精确名字匹配。
  */
-const CACHE = 'card-quiz-v27';   // v27：考试倒计时+多目标计划(三阶段一键生成)；goals/meta 表随备份导出
+const CACHE = 'card-quiz-v28';   // v28：刷题/背题上一题+跳过+回看；考试交卷未答提醒；BGM 背景音乐(可扩展+本地导入)；背题卡带题目与章节；机场话术三级章节
                                  // 注意：本 SW 对同源资源是 cache-first，改了 styles.css/app.js
                                  // 必须同步改这里，否则老用户永远拿到旧样式。
 const PREFIX = 'card-quiz-';
 const SHELL = [
   './', './index.html', './styles.css',
-  './app.js', './db.js', './parser.js', './scoring.js', './slicer.js', './sfx.js',
+  './app.js', './db.js', './parser.js', './scoring.js', './slicer.js', './sfx.js', './bgm.js',
   './manifest.webmanifest', './icon.svg',
   './bg-light.webp', './bg-dark.webp'
 ];

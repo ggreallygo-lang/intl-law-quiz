@@ -181,6 +181,19 @@
           <button data-v="1">开</button><button data-v="0">关</button>
         </div>
       </div>
+      <!-- v28：背景音乐（内置合成曲 + 本地音乐导入，曲目可扩展） -->
+      <div class="field"><label>背景音乐（做题时轻声循环）</label>
+        <div class="seg" id="bgmOnSeg">
+          <button data-v="1">开</button><button data-v="0">关</button>
+        </div>
+        <div class="plan-row" style="margin-top:8px">
+          <select id="bgmTrack"></select>
+          <button class="btn secondary" id="bgmAdd" style="flex:none">＋ 添加</button>
+          <button class="btn secondary hidden" id="bgmDel" style="flex:none">删</button>
+        </div>
+        <input type="file" id="bgmFile" accept="audio/*" class="hidden">
+        <div class="muted" style="font-size:12px;margin-top:4px">支持 mp3 / m4a / ogg / wav，存在本机不联网</div>
+      </div>
       <button class="btn ghost" id="sfxModalClose">关闭</button>
     </div>
   </div>
@@ -252,6 +265,7 @@
   <script src="slicer.js"></script>
   <script src="scoring.js"></script>
   <script src="sfx.js"></script>
+  <script src="bgm.js"></script>
   <script src="app.js"></script>
   <script>
     if ('serviceWorker' in navigator) {

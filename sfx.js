@@ -45,19 +45,20 @@
              right: [494, 587], wrong: [175, 131], done: [392, 494, 587], warn: 660, neutral: 330, flip: [400, 1400] },
     wood:  { label: '木质', wave: 'square',   wrongWave: 'square',   vol: 0.5,
              right: [988, 1319], wrong: [147, 110], done: [784, 988, 1319], warn: 1047, neutral: 494, flip: [700, 2000] },
-    retro: { label: '怀旧', vol: 0.9,
+    retro: { label: '怀旧', vol: 1,
              synth: {
                flip: function () {                 // QQ游戏大厅切桌「刷-刷-刷」
-                 retroWhoosh(0, 1300, 2500);
-                 retroWhoosh(105, 1500, 2700);
-                 retroWhoosh(210, 1700, 2900);
+                 retroWhoosh(0, 1300, 2600);
+                 retroWhoosh(105, 1500, 2800);
+                 retroWhoosh(210, 1700, 3000);
                },
-               right: function () {                // 经典「滴滴」消息音
-                 retroBlip(988, 0); retroBlip(988, 95);
+               right: function () {                // 经典消息「滴滴滴滴滴滴」六连快滴
+                 retroBlip(1047, 0); retroBlip(1047, 70); retroBlip(1047, 140);
+                 retroBlip(1047, 210); retroBlip(1047, 280); retroBlip(1047, 350);
                },
-               wrong: function () {                // 系统消息「咳、咳」
-                 retroCoughBurst(0, 780, 300, 0.10, 1.6);
-                 retroCoughBurst(165, 660, 250, 0.13, 1.6);
+               wrong: function () {                // 系统消息「咳、咳」：第二声更重更低
+                 retroCoughBurst(0, 820, 340, 0.09, 1.6);
+                 retroCoughBurst(150, 660, 240, 0.16, 1.6);
                },
                neutral: function () { retroKnock(0); },   // 单声「咚」
                warn: function () {                  // 闹钟式「滴滴滴滴」
@@ -135,22 +136,23 @@
   }
 
   // ---- v26 怀旧包积木：全部复用 tone/noise（音量系数、异常兜底、enabled 短路都继承）----
+  // v28 加强：用户反馈「不明显」——整体增益上调，波形/节奏更贴梗
   function retroBlip(freq, delayMs) {         // 「滴」：短促方波，2000 年提示音的味道
-    setTimeout(function () { tone(freq, 0.075, { type: 'square', gain: 0.045 }); }, delayMs);
+    setTimeout(function () { tone(freq, 0.075, { type: 'square', gain: 0.08 }); }, delayMs);
   }
   function retroKnock(delayMs) {              // 「咚」：低频正弦下坠 + 一点起振噪声当敲击感
     setTimeout(function () {
-      tone(185, 0.11, { type: 'sine', gain: 0.16, slideTo: 98 });
-      noise(0.03, 0.10, 2200, 1600);
+      tone(185, 0.12, { type: 'sine', gain: 0.26, slideTo: 92 });
+      noise(0.035, 0.16, 2200, 1600);
     }, delayMs);
   }
   function retroWhoosh(delayMs, from, to) {   // 「刷」：一声带通噪声扫频，三连就是切桌
-    setTimeout(function () { noise(0.07, 0.13, from, to); }, delayMs);
+    setTimeout(function () { noise(0.07, 0.19, from, to); }, delayMs);
   }
   function retroCoughBurst(delayMs, from, to, dur, q) {  // 「咳」：带通噪声下坠 + 低频锯齿衬底
     setTimeout(function () {
-      noise(dur, 0.20, from, to, q);
-      tone(150, dur, { type: 'sawtooth', gain: 0.05, slideTo: 95 });
+      noise(dur, 0.30, from, to, q);
+      tone(155, dur, { type: 'sawtooth', gain: 0.09, slideTo: 90 });
     }, delayMs);
   }
   // 当前包若有该事件的自定义合成则执行之；返回是否已接管（接管后震动仍由外层统一给）

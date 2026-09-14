@@ -125,6 +125,9 @@ body {
   width: 100%; max-width: 340px;
   box-shadow: var(--shadow);
   animation: viewIn .22s var(--ease) both;
+  /* v28：设置弹层内容变多（音效/音效包/震动/BGM），小屏上底部按钮会被挤出视外够不着
+     ——限高 + 内部滚动（与 .plan-card 同策略） */
+  max-height: 86dvh; overflow-y: auto;
 }
 .modal-card h3 { margin: 0; font-size: 17px; }
 .modal-card .btn { width: 100%; }
@@ -963,3 +966,15 @@ body {
 .pg-ops { display: flex; gap: 10px; margin-top: 6px; }
 .pg-ops button { border: none; background: none; padding: 0; font-size: 12px; cursor: pointer; color: var(--primary); }
 .pg-ops button.pg-del { color: #c0392b; }
+
+/* ===== v28：背题卡——章节路径面包屑 + 答案面的题目回显 ===== */
+.card-chapter {
+  font-size: 11px; color: var(--muted); margin-bottom: 8px;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.card-stem-mini {
+  font-size: 13px; color: var(--muted); line-height: 1.55;
+  padding: 8px 10px; margin-bottom: 12px;
+  background: var(--seg-bg); border-radius: 8px;
+  max-height: 30vh; overflow-y: auto;
+}
