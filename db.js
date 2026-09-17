@@ -160,10 +160,21 @@
     await reqP(s.put(bank));
     return bank;
   }
+  // v30：题库改名（只动 name/updatedAt，题量/目录/进度全不动）
+  async function renameBank(id, name) {
+    const n = String(name || '').trim().slice(0, 60);
+    if (!n) throw new Error('名字不能为空');
+    const s = await tx('banks', 'readwrite');
+    const b = await reqP(s.get(id));
+    if (!b) return null;
+    b.name = n;
+    b.updatedAt = Date.now();
+    await reqP(s.put(b));
+    return b;
+  }
   async function listBanks() {
     const s = await tx('banks', 'readonly');
-    const all = await reqP(s.getAll());
-    return all.sort((a, b) => b.updatedAt - a.updatedAt);
+    const all = await reqP(s.getAll());    return all.sort((a, b) => b.updatedAt - a.updatedAt);
   }
   async function getBank(id) {
     const s = await tx('banks', 'readonly');
@@ -325,6 +336,11 @@
     return reqP(s.get(qid));
   }
   async function saveProgress(p) {
+    // v33.1 F03（架构评审）：持久化日期护栏——历史代码可能写入 Infinity/NaN due
+    // （不限量积压分期的除零产物），写入前统一收敛为「待复习」；只救新写入，不改历史存量
+    if (p && (!isFinite(p.due) || p.due == null)) p.due = Date.now();
+    if (p && p.lastReviewed != null && !isFinite(p.lastReviewed)) delete p.lastReviewed;
+    if (p && p.lastWrong != null && !isFinite(p.lastWrong)) delete p.lastWrong;
     const s = await tx('progress', 'readwrite');
     return reqP(s.put(p));
   }
@@ -364,6 +380,7 @@
             p[field].correct++;
             // v24 错题毕业：连续答对计数 +1（达到 wrongGradN() 次自动移出错题本活跃清单）
             p.wrongStreak = (p.wrongStreak || 0) + 1;
+            // v33.1 F01：答对不强制改 due——已在复习中的保持原排期，未激活的保持免检
           } else {
             p[field].wrong++;
             p.lapses = (p.lapses || 0) + 1;
@@ -371,8 +388,11 @@
             // 错题本（F1）：记下最近错误时间用于排序；曾被手动移除的要重新收回来
             p.lastWrong = Date.now();
             p.wrongDismissed = false;
+            // v33.1 F01（架构评审）：错题回流与刷题路径统一——激活复习资格 + 立即到期。
+            // v32 只写 due 没写 inSrs，考试错题有 progress 却进不了到期队列（掉在两个队列之间）
+            p.inSrs = true;
+            p.due = Date.now();
           }
-          p.due = Date.now();
           s.put(p);
         };
       });
@@ -424,13 +444,19 @@
     const types = (o.types && o.types.length) ? new Set(o.types) : null;
     const chap = o.chapter || null;
     const wantGrad = !!o.graduated;
+    const wantDismissed = !!o.dismissed;            // v30：手动移除的错题单独成视图，可查历史可恢复
     const out = [];
     (progs || []).forEach(p => {
       if (!p || !p.qid) return;
       const w = wrongCount(p);
-      if (w <= 0 || p.wrongDismissed) return;
+      if (w <= 0) return;
       const grad = (p.wrongStreak || 0) >= WRONG_GRAD_N;
-      if (grad !== wantGrad) return;               // 活跃栏不要毕业的，毕业栏只要毕业的
+      if (wantDismissed) {
+        if (!p.wrongDismissed) return;              // 「已移除」只收手动移除的
+      } else {
+        if (p.wrongDismissed) return;               // 移除的不进进行中/已毕业（保持老口径）
+        if (grad !== wantGrad) return;              // 活跃栏不要毕业的，毕业栏只要毕业的
+      }
       const q = qmap ? (qmap[p.qid] || null) : null;
       if (qmap && !q) return;                       // 题目已被删/重导入过：无从展示，不列
       if (types && !types.has(q.type)) return;
@@ -438,7 +464,8 @@
       out.push({
         qid: p.qid, question: q, wrong: w, right: rightCount(p),
         lastWrong: p.lastWrong || p.due || 0, order: q ? (q.order || 0) : 0,
-        graduated: grad
+        graduated: grad, dismissed: !!p.wrongDismissed,
+        streak: p.wrongStreak || 0
       });
     });
     out.sort((a, b) => (b.wrong - a.wrong) || (b.lastWrong - a.lastWrong) || (a.order - b.order));
@@ -517,7 +544,15 @@
     if (!a) return b;
     if (!b) return a;
     const maxCnt = (x, y) => Math.max(x || 0, y || 0);
-    const out = { qid: a.qid, bankId: a.bankId || b.bankId };
+    // v33.1 F02（架构评审）：以「完整状态快照」为合并主体——复习近况（lastReviewed/lastWrong
+    // 较新）的一方整体胜出，防止旧设备的高 reps 状态盖掉新设备的遗忘状态；
+    // 字段白名单式拼接会丢 inSrs/wrongStreak，一并废止。计数字段仍逐项取 max：
+    // 同源重复合并不虚增（幂等），历史累计不丢失。
+    const recency = (x) => Math.max(x.lastReviewed || 0, x.lastWrong || 0);
+    const prim = (recency(b) > recency(a)) ? b : a;
+    const out = Object.assign({}, prim);            // 完整快照：inSrs/wrongStreak/ease/interval/reps/due 全保留
+    out.qid = a.qid;
+    out.bankId = a.bankId || b.bankId;
     out.practice = {
       correct: maxCnt(a.practice && a.practice.correct, b.practice && b.practice.correct),
       wrong: maxCnt(a.practice && a.practice.wrong, b.practice && b.practice.wrong)
@@ -526,15 +561,9 @@
       correct: maxCnt(a.exam && a.exam.correct, b.exam && b.exam.correct),
       wrong: maxCnt(a.exam && a.exam.wrong, b.exam && b.exam.wrong)
     };
-    const prim = ((b.reps || 0) > (a.reps || 0)) ? b : a;
-    out.ease = prim.ease != null ? prim.ease : 2.5;
-    out.interval = prim.interval || 0;
-    out.reps = prim.reps || 0;
-    out.due = prim.due || 0;
     out.lapses = Math.max(a.lapses || 0, b.lapses || 0);
     out.lastWrong = Math.max(a.lastWrong || 0, b.lastWrong || 0);
     out.lastReviewed = Math.max(a.lastReviewed || 0, b.lastReviewed || 0);
-    out.wrongDismissed = !!prim.wrongDismissed;
     return out;
   }
 
@@ -899,6 +928,33 @@
     while (set[dayKey(t)]) { n++; t -= 86400000; }
     return n;
   }
+  /**
+   * v32 宽恕打卡（Anki 调研 A5）：每滚动 7 天窗口允许断 1 天（自动冻结，Duolingo 数据
+   * 支持弹性优于刚性）。从今天往回走；用过的断天要「挣回来」——每连续学满 6 天返还 1 次冻结额度。
+   * 返回 { days, frozen }：days=宽恕口径连续天数，frozen=用掉的冻结次数。
+   */
+  function streakForgiving(sessions, nowMs) {
+    const set = {};
+    (sessions || []).forEach(it => { if (it && it.qid) set[dayKey(it.ts)] = 1; });
+    let t = nowMs || Date.now();
+    if (!set[dayKey(t)]) t -= 86400000;
+    let n = 0, frozen = 0, run = 0, credit = 0, pendingFree = false;
+    while (n <= 3650) {                          // 防御：最多看 10 年
+      if (set[dayKey(t)]) {
+        if (pendingFree) { frozen = 1; pendingFree = false; }   // 断天后面真的学到卡，冻结才记账
+        n++; run++;
+        if (run % 6 === 0) credit++;             // 连续 6 天挣 1 额度
+      } else {
+        if (credit > 0) credit--;                // 优先花挣来的（不计冻结）
+        else if (frozen === 0 && !pendingFree) pendingFree = true;   // 每段连胜 1 次免费冻结
+        else break;                              // 额度和免费冻结都没了，真断
+        run = 0;
+      }
+      t -= 86400000;
+      if (t <= 0) break;
+    }
+    return { days: n, frozen: frozen };
+  }
 
   // ---------- F18：弱项专项包（借鉴粉笔「个性化刷题 / 智能组卷」） ----------
   // 正确率一律复用 progress 累计口径（wrongCount/rightCount = practice + exam 合计），
@@ -1064,14 +1120,14 @@
   }
 
   return {
-    open, saveBank, listBanks, getBank, deleteBank, sanitizeOutline,
+    open, saveBank, listBanks, getBank, deleteBank, renameBank, sanitizeOutline,
     addQuestions, listQuestions, updateQuestion,
     getOutline, deriveOutlineFromQuestions, expandChapterPaths,
     countByChapterPath, applyCounts, chapterKey,
     getProgress, saveProgress, listProgress, bulkUpdateProgress,
     wrongCount, rightCount, topChapter, pickWrong, setWrongDismissed, wrongGradN, restoreWrong,
     ensureSessionsStore, logSessions, listSessions,
-    dayKey, aggTotals, dailyCounts, streakDays,
+    dayKey, aggTotals, dailyCounts, streakDays, streakForgiving,
     chapterAccuracy, weakChapters, weakPack, outlineMastery,
     dumpAll, restoreAll,
     mergeProgressRecords, pickBankRecord, planMerge, mergeAll,

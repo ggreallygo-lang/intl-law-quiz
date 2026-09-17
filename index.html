@@ -62,6 +62,8 @@
       <button class="btn" id="pasteImport">解析并导入题库 ›</button>
     </div>
     <div id="bankList"></div>
+    <!-- v31：跨库刷题入口（多题库混合 / 只做选择题） -->
+    <div class="mix-entry" id="mixEntry">🔀 跨库刷题 · 选几个题库（或全部）· 只做选择题 ›</div>
     <div class="home-tools">
       <button class="btn secondary" id="backupBtn">💾 导出备份</button>
       <button class="btn secondary" id="restoreBtn">📥 恢复备份</button>
@@ -118,6 +120,15 @@
       <div class="seg" id="rangeSeg">
         <button data-v="all" class="on">全部题目</button>
         <button data-v="chapter">按章节选</button>
+      </div>
+      <!-- v30：做题顺序（仅刷题）/ 背书方案（仅背题） -->
+      <div class="seg hidden" id="orderSeg">
+        <button data-v="rand" class="on">🎲 随机顺序</button>
+        <button data-v="seq">📖 按原顺序</button>
+      </div>
+      <div class="seg hidden" id="planSeg">
+        <button data-v="due" class="on">⏰ 到期复习（今日该背）</button>
+        <button data-v="all">📚 全书过卡（系统方案）</button>
       </div>
       <div id="chapterPicker" class="chapter-picker hidden"></div>
       <button class="btn" id="rangeStart">开始 ›</button>
@@ -222,6 +233,19 @@
         <button data-v="20">20 题</button><button data-v="50">50 题</button>
         <button data-v="100">100 题</button><button data-v="150">150 题</button>
       </div>
+      <!-- v32 A1：背题每日限额（Anki 式保护——防积压雪崩，不累积到明天） -->
+      <div class="field"><label>每日新卡上限</label>
+        <div class="seg" id="limNewSeg">
+          <button data-v="10">10</button><button data-v="20">20</button>
+          <button data-v="30">30</button><button data-v="50">50</button><button data-v="0">不限</button>
+        </div>
+      </div>
+      <div class="field"><label>每日复习上限</label>
+        <div class="seg" id="limRevSeg">
+          <button data-v="50">50</button><button data-v="100">100</button>
+          <button data-v="200">200</button><button data-v="0">不限</button>
+        </div>
+      </div>
       <button class="btn ghost" id="goalModalClose">关闭</button>
     </div>
   </div>
@@ -254,6 +278,31 @@
       </div>
       <button class="btn" id="planGen" style="width:100%">✨ 生成建议计划（三阶段）</button>
       <button class="btn ghost" id="planModalClose">关闭</button>
+    </div>
+  </div>
+
+  <!-- v31：跨库刷题弹层（题库多选 + 题型筛选 + 顺序） -->
+  <div class="modal-mask hidden" id="mixModal">
+    <div class="modal-card">
+      <h3>🔀 跨库刷题</h3>
+      <div class="field"><label>选择题库（可多选）</label>
+        <div id="mixBanks" class="chapter-picker" style="max-height:200px;margin-top:4px"></div>
+        <button class="btn secondary" id="mixAll" style="width:100%;margin-top:8px">全选 / 全不选</button>
+      </div>
+      <div class="field"><label>题型</label>
+        <div class="seg" id="mixTypeSeg">
+          <button data-v="all" class="on">全部题型</button><button data-v="choice">✅ 选择题</button>
+          <button data-v="judge">判断题</button><button data-v="essay">主观题</button>
+        </div>
+      </div>
+      <div class="field"><label>顺序</label>
+        <div class="seg" id="mixOrderSeg">
+          <button data-v="rand" class="on">🎲 随机</button><button data-v="seq">📖 按原顺序</button>
+        </div>
+      </div>
+      <div class="muted" id="mixHint" style="font-size:13px;margin-top:8px"></div>
+      <button class="btn" id="mixStart" style="width:100%;margin-top:10px">开始刷题 ›</button>
+      <button class="btn ghost" id="mixModalClose">关闭</button>
     </div>
   </div>
 

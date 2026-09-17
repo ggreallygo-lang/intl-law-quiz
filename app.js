@@ -102,6 +102,7 @@
   }
   function cleanupStudy() {
     stopTimer(exam); stopTimer(prac); stopTimer(mem);   // v21：三个模式的计时器统一停
+    if (mem && mem.keyHandler) { document.removeEventListener('keydown', mem.keyHandler); mem.keyHandler = null; }   // v32 A6
   }
   function setBack(target, label) {
     S.back = target;
@@ -142,11 +143,23 @@
       div.className = 'bank-card';
       const date = new Date(b.updatedAt).toLocaleDateString();
       div.innerHTML =
-        `<span class="del" data-del="${b.id}">删除</span>` +
+        `<span class="del" data-del="${b.id}">删除</span><span class="ren" data-ren="${b.id}">改名</span>` +
         `<div class="name">${esc(b.name)}</div>` +
         `<div class="meta">${b.count || 0} 题 · 更新于 ${date}</div>`;
       div.addEventListener('click', (e) => {
         if (e.target.dataset.del) { e.stopPropagation(); confirmDelete(e.target.dataset.del, b.name); return; }
+        if (e.target.dataset.ren) {          // v30：题库改名（只动名字，题目/进度不动）
+          e.stopPropagation();
+          const name = prompt('给题库改个名字：', b.name);
+          if (name == null) return;
+          safe((async () => {
+            const nb = await DB.renameBank(b.id, name);
+            if (!nb) { toast('题库不存在了，刷新一下'); return; }
+            toast('已改名：' + nb.name);
+            await renderHome();
+          })(), '改名失败');
+          return;
+        }
         openBank(b.id);
       });
       list.appendChild(div);
@@ -165,15 +178,20 @@
     const box = $('#homeStats'); if (!box) return;
     const sess = (await DB.listSessions()) || [];
     const t = DB.aggTotals(sess);
-    const streak = DB.streakDays(sess);
+    const streakInfo = DB.streakForgiving ? DB.streakForgiving(sess) : { days: DB.streakDays(sess), frozen: 0 };   // v32 A5：宽恕口径
     const h = Math.floor(t.ms / 3600000);
     const m = Math.round((t.ms % 3600000) / 60000);
     const dur = h > 0 ? `${h} 小时 ${m} 分` : (m > 0 ? `${m} 分钟` : `${Math.round(t.ms / 1000)} 秒`);
     const today = (DB.dailyCounts(sess, 1)[0] || {}).count || 0;
     const goal = getDailyGoal();
     const pct = Math.min(100, Math.round(today / goal * 100));
+    // v32 A5：近 14 天热图（Anki Heatmap 同款心理——打卡轨迹可见，损失规避防断签）
+    const heat = DB.dailyCounts(sess, 14).map(d =>
+      `<span class="hh hh${d.count ? Math.min(3, Math.ceil(d.count / 15)) : 0}" title="${d.day}：${d.count || 0} 题"></span>`).join('');
     box.innerHTML =
-      `<div class="hs-main">📊 累计做题 <b>${t.count}</b> 题 · 累计 ${dur} · 连续打卡 <b>${streak}</b> 天</div>` +
+      `<div class="hs-main">📊 累计做题 <b>${t.count}</b> 题 · 累计 ${dur} · 连续打卡 <b>${streakInfo.days}</b> 天` +
+      (streakInfo.frozen ? `<span class="muted" style="font-size:12px">（含 ${streakInfo.frozen} 次冻结）</span>` : '') + `</div>` +
+      `<div class="hs-heat">${heat}<span class="hh-lab">近14天</span></div>` +
       `<div class="hs-today" id="todayRow" title="点此修改每日目标">` +
       `今日 <b>${today}</b> / ${goal} 题` +
       `<span class="hs-goal-bar"><span style="width:${pct}%"></span></span>` +
@@ -294,6 +312,53 @@
     }).join('');
   }
 
+  // ---------- v31：跨库刷题（多题库混合 + 题型筛选） ----------
+  const MIX_TYPE_SETS = { choice: ['single', 'multiple'], judge: ['judge'], essay: ['essay', 'term', 'fill'] };
+  function openHomeView() {                   // 跨库刷题结束回首页（没有具体题库可回）
+    $('#title').textContent = '国际法题库';
+    showView('home');
+    safe(renderHome(), '刷新列表失败');
+  }
+  function mixTypeSel() {
+    const b = $('#mixTypeSeg').querySelector('button.on');
+    return b ? b.dataset.v : 'all';
+  }
+  async function openMixModal() {
+    const banks = await DB.listBanks();
+    if (!banks.length) { toast('先导入至少一个题库'); return; }
+    $('#mixBanks').innerHTML = banks.map(b =>
+      `<label class="ck-row"><input type="checkbox" data-id="${esc(b.id)}" checked>` +
+      `<span>${esc(b.name)}（${b.count || 0} 题）</span></label>`).join('');
+    $('#mixBanks').querySelectorAll('input').forEach(i => i.onchange = updateMixHint);
+    updateMixHint();
+    $('#mixModal').classList.remove('hidden');
+  }
+  async function updateMixHint() {
+    const ids = Array.from($('#mixBanks').querySelectorAll('input:checked')).map(i => i.dataset.id);
+    const t = mixTypeSel();
+    let qs = [];
+    for (const id of ids) qs = qs.concat((await DB.listQuestions(id)) || []);
+    const set = MIX_TYPE_SETS[t];
+    const n = set ? qs.filter(q => set.indexOf(q.type) >= 0).length : qs.length;
+    $('#mixHint').textContent = ids.length
+      ? `已选 ${ids.length} 个题库 · ${t === 'all' ? '全部题型' : (t === 'choice' ? '选择题' : (t === 'judge' ? '判断题' : '主观题'))} 共 ${n} 题`
+      : '至少勾选一个题库';
+    return { ids, n };
+  }
+  async function startMixed() {
+    const { ids, n } = await updateMixHint();
+    if (!ids.length) { toast('至少勾选一个题库'); return; }
+    if (!n) { toast('所选题型在这些题库里没有题'); return; }
+    let qs = [];
+    for (const id of ids) qs = qs.concat((await DB.listQuestions(id)) || []);
+    const set = MIX_TYPE_SETS[mixTypeSel()];
+    S.pool = set ? qs.filter(q => set.indexOf(q.type) >= 0) : qs;
+    S.mixed = true;                           // 跨库态：进度/流水按各题自带的 bankId 落库
+    const ob = $('#mixOrderSeg').querySelector('button.on');
+    $('#mixModal').classList.add('hidden');
+    startPractice({ title: `跨库刷题（${ids.length} 库 · ${S.pool.length} 题）`, order: ob ? ob.dataset.v : 'rand' });
+  }
+
   // 详情页：近 14 天每日做题量，纯 CSS 条形（零依赖，不引图表库）
   async function renderBankChart() {
     const box = $('#bankChart'); if (!box) return;
@@ -329,6 +394,7 @@
 
   // ---------- 题库详情（统计 + 目录 + 题目列表） ----------
   async function openBank(id) {
+    S.mixed = false;                          // v31：进具体题库即退出跨库混合态
     const bank = await DB.getBank(id);
     S.bank = bank;
     S.questions = await DB.listQuestions(id);
@@ -620,7 +686,7 @@
     const progs = await DB.listProgress(S.bank.id);
     const qmap = {};
     S.questions.forEach(q => { qmap[q.id] = q; });
-    wb = { progs: progs, qmap: qmap, type: null, chapter: null, graduated: false };
+    wb = { progs: progs, qmap: qmap, type: null, chapter: null, view: 'active' };   // v30：三视图 active/grad/dismissed
     setBack('bank', '‹ 题库');
     $('#title').textContent = '错题本';
     renderWrongBook();
@@ -632,7 +698,8 @@
       questionMap: wb.qmap,
       types: wb.type ? [wb.type] : null,
       chapter: wb.chapter,
-      graduated: wb.graduated
+      graduated: wb.view === 'grad',
+      dismissed: wb.view === 'dismissed'
     });
   }
 
@@ -643,13 +710,25 @@
     ).join('') + `</div>`;
   }
 
+  // v30：相对时间（错题历史行用）——「刚刚 / N 分钟前 / N 小时前 / N 天前 / 日期」
+  function agoStr(ts) {
+    if (!ts) return '—';
+    const s = Math.floor((Date.now() - ts) / 1000);
+    if (s < 90) return '刚刚';
+    if (s < 3600) return Math.floor(s / 60) + ' 分钟前';
+    if (s < 86400) return Math.floor(s / 3600) + ' 小时前';
+    if (s < 86400 * 30) return Math.floor(s / 86400) + ' 天前';
+    return new Date(ts).toLocaleDateString();
+  }
+
   function renderWrongBook() {
     const view = $('#view-wrong');
     const active = DB.pickWrong(wb.progs, { questionMap: wb.qmap });
     const grad = DB.pickWrong(wb.progs, { questionMap: wb.qmap, graduated: true });
+    const dismissed = DB.pickWrong(wb.progs, { questionMap: wb.qmap, dismissed: true });   // v30：手动移除的也有家了
 
     // 筛选项从「当前视图实际有错题的范围」里长出来，避免列出一堆空章节
-    const base = wb.graduated ? grad : active;
+    const base = (wb.view === 'grad') ? grad : (wb.view === 'dismissed' ? dismissed : active);
     const typeCnt = {}, chapCnt = {};
     base.forEach(it => {
       const q = it.question; if (!q) return;
@@ -666,20 +745,26 @@
     const chapPairs = [['', '全部章节', base.length]].concat(
       Object.keys(chapCnt).map(c => [c, c, chapCnt[c]]));
 
-    const sumWrong = items.reduce((n, it) => n + it.wrong, 0);
-    let html = `<div class="bank-summary">` +
-      (wb.graduated
-        ? `<div class="sum-main"><b>${items.length}</b> 道已毕业 🎓 · 连续答对 ${DB.wrongGradN()} 次通过</div>` +
-          `<div class="sum-sub">毕业不影响历史统计；想再练点「重新练习」收回活跃清单</div>`
-        : `<div class="sum-main"><b>${items.length}</b> 道错题进行中${grad.length ? ` · 已毕业 ${grad.length} 道 🎓` : ''}</div>` +
-          `<div class="sum-sub">连续答对 ${DB.wrongGradN()} 次自动毕业；按「错误次数 → 最近错误时间」排序</div>`) +
-      `</div>`;
-    // v24：进行中 / 已毕业 视图切换
+    let html = `<div class="bank-summary">`;
+    if (wb.view === 'grad') {
+      html += `<div class="sum-main"><b>${items.length}</b> 道已毕业 🎓</div>` +
+        `<div class="sum-sub">自动移除规范：连对 ${DB.wrongGradN()} 次自动移出「进行中」，历史统计保留；点「重新练习」收回活跃</div>`;
+    } else if (wb.view === 'dismissed') {
+      html += `<div class="sum-main"><b>${items.length}</b> 道已手动移除 🗑</div>` +
+        `<div class="sum-sub">手动移除规范：本人确认后才移出「进行中」，下次答错自动回来；随时可点「恢复」</div>`;
+    } else {
+      html += `<div class="sum-main"><b>${items.length}</b> 道错题进行中` +
+        `${grad.length ? ` · 已毕业 ${grad.length} 🎓` : ''}${dismissed.length ? ` · 已移除 ${dismissed.length} 🗑` : ''}</div>` +
+        `<div class="sum-sub">规范：连对 ${DB.wrongGradN()} 次自动移除（毕业）· 手动移除需确认、可恢复 · 按「错误次数→最近答错」排序</div>`;
+    }
+    html += `</div>`;
+    // v30：三视图切换（进行中 / 已毕业 / 已移除）
     html += `<div class="wb-filters">` +
-      `<button class="wb-chip${!wb.graduated ? ' on' : ''}" data-kind="view" data-v="">进行中 ${active.length}</button>` +
-      `<button class="wb-chip${wb.graduated ? ' on' : ''}" data-kind="view" data-v="grad">已毕业 ${grad.length}</button>` +
+      `<button class="wb-chip${wb.view === 'active' ? ' on' : ''}" data-kind="view" data-v="">进行中 ${active.length}</button>` +
+      `<button class="wb-chip${wb.view === 'grad' ? ' on' : ''}" data-kind="view" data-v="grad">已毕业 ${grad.length}</button>` +
+      `<button class="wb-chip${wb.view === 'dismissed' ? ' on' : ''}" data-kind="view" data-v="dismissed">已移除 ${dismissed.length}</button>` +
       `</div>`;
-    if (!wb.graduated) {
+    if (wb.view === 'active') {
       if (typePairs.length > 2) html += wbChips('type', typePairs, wb.type);
       if (chapPairs.length > 2) html += wbChips('chapter', chapPairs, wb.chapter);
       html += `<div class="wb-actions">` +
@@ -687,25 +772,35 @@
         `<button class="btn secondary" id="wbMemorize"${items.length ? '' : ' disabled'}>🃏 背错题</button>` +
         `</div>`;
     }
+    // v30：历史记录行——错/对次数、连对进度、最近答错时间，一眼看清这道题的过往
+    const histLine = (it) => {
+      if (wb.view === 'grad') return `曾错 ${it.wrong} · 曾对 ${it.right} · ${agoStr(it.lastWrong)}答错过`;
+      if (wb.view === 'dismissed') return `曾错 ${it.wrong} · 曾对 ${it.right} · ${agoStr(it.lastWrong)}答错过`;
+      return `错 ${it.wrong} · 对 ${it.right} · 连对 ${it.streak || 0}/${DB.wrongGradN()} · ${agoStr(it.lastWrong)}答错`;
+    };
     html += items.length
       ? `<div class="qlist">` + items.map(it =>
         `<div class="wb-item" data-qid="${esc(it.qid)}">` +
         `<div class="wb-head">` +
-        (wb.graduated
+        (wb.view === 'grad'
           ? `<span class="wb-badge wb-badge-grad">🎓 已毕业</span><button class="wb-remove wb-restore" type="button">重新练习</button>`
-          : `<span class="wb-badge">错 ${it.wrong} 次${it.right ? ' · 对 ' + it.right + ' 次' : ''}</span>` +
-            `<button class="wb-remove" type="button">移除</button>`) +
+          : wb.view === 'dismissed'
+            ? `<span class="wb-badge wb-badge-del">🗑 已移除</span><button class="wb-remove wb-restore" type="button">恢复</button>`
+            : `<span class="wb-badge">错 ${it.wrong} 次${it.right ? ' · 对 ' + it.right + ' 次' : ''}</span>` +
+              `<button class="wb-remove" type="button">移除</button>`) +
         `</div>` +
+        `<div class="wb-hist">📋 ${histLine(it)}</div>` +
         questionCardHtml(it.question) + `</div>`).join('') + `</div>`
-      : `<div class="empty">${wb.graduated ? '还没有毕业的错题——连续答对 ' + DB.wrongGradN() + ' 次就会出现在这里 🎓'
+      : `<div class="empty">${wb.view === 'grad' ? '还没有毕业的错题——连续答对 ' + DB.wrongGradN() + ' 次就会出现在这里 🎓'
+          : wb.view === 'dismissed' ? '没有被手动移除的错题。移除前会征求确认，移除后随时可恢复。'
           : (base.length ? '这个筛选条件下没有错题' : '还没有错题，去刷题或考试攒一攒 👆')}</div>`;
     view.innerHTML = html;
 
     view.querySelectorAll('.wb-chip').forEach(b => {
       b.onclick = () => {
         if (b.dataset.kind === 'view') {
-          if ((b.dataset.v === 'grad') === wb.graduated) return;
-          wb.graduated = b.dataset.v === 'grad';
+          if (b.dataset.v === wb.view) return;
+          wb.view = b.dataset.v || 'active';
           wb.type = null; wb.chapter = null;      // 视图切换时清掉题型/章节筛选
         } else if (b.dataset.kind === 'type') {
           const v = b.dataset.v || null;
@@ -720,11 +815,11 @@
     bindReveal(view);
     view.querySelectorAll('.wb-remove').forEach(b => {
       const qid = b.closest('.wb-item').dataset.qid;
-      b.onclick = () => wb.graduated
+      b.onclick = () => (wb.view !== 'active')
         ? safe(restoreWrongItem(qid), '收回失败')
         : safe(removeWrong(qid), '移除失败');
     });
-    if (!wb.graduated && items.length) {
+    if (wb.view === 'active' && items.length) {
       const list = items.map(it => it.question);
       $('#wbPractice').onclick = () => startMode('practice', list, { title: '刷错题' });
       // 背错题不做 SM2 due 过滤：错题就是要全部过一遍
@@ -735,16 +830,18 @@
   async function restoreWrongItem(qid) {
     const ok = await DB.restoreWrong(qid, S.bank.id);
     if (!ok) { toast('这道题的进度记录不在了'); return; }
-    toast('已收回活跃清单，继续加油');
+    toast(wb.view === 'dismissed' ? '已恢复到「进行中」' : '已收回活跃清单，继续加油');
     wb.progs = await DB.listProgress(S.bank.id);
     renderWrongBook();
     await safe(refreshWrongCount(), '刷新错题数失败');
   }
 
   async function removeWrong(qid) {
+    // v30：手动移除须本人确认（移除规范：不删任何统计，只是移出「进行中」；下次答错自动回来）
+    if (!confirm('同意移除这道错题吗？\n\n· 只移出「进行中」，历史统计保留\n· 下次答错会自动回来\n· 随时可在「已移除」里恢复')) return;
     const ok = await DB.setWrongDismissed(qid, S.bank.id, true);
     if (!ok) { toast('这道题的进度记录不在了'); return; }
-    toast('已移出错题本');
+    toast('已移出「进行中」，可在「已移除」里恢复');
     wb.progs = await DB.listProgress(S.bank.id);   // 重读进度，但保留当前筛选条件
     renderWrongBook();
     await safe(refreshWrongCount(), '刷新错题数失败');
@@ -831,23 +928,98 @@
 
   // ---------- 背题模式 ----------
   let mem = null;
+  // v32 A1：每日限额（localStorage，默认新卡 20 / 复习 100，0=不限）+ 当日已背计数
+  const LIM_NEW_KEY = 'limit-new', LIM_REV_KEY = 'limit-review', MEMDAY_KEY = 'memday';
+  function getLimit(key, dft) {
+    const n = parseInt(localStorage.getItem(key) || '', 10);
+    return (isNaN(n) || n < 0) ? dft : n;
+  }
+  function memDay() {
+    const today = DB.dayKey(Date.now());
+    try {
+      const o = JSON.parse(localStorage.getItem(MEMDAY_KEY) || 'null');
+      if (o && o.day === today) return o;
+    } catch (e) {}
+    return { day: today, review: 0, fresh: 0 };
+  }
+  function bumpMemDay(kind) {
+    const c = memDay();
+    c[kind] = (c[kind] || 0) + 1;
+    try { localStorage.setItem(MEMDAY_KEY, JSON.stringify(c)); } catch (e) {}
+  }
+
   async function startMemorize(opts) {
     opts = opts || {};
     stopTimer(mem);                        // v21：防上一轮的 interval 泄漏
     const progs = await DB.listProgress(S.bank.id);
-    const map = {}; progs.forEach(p => map[p.qid] = p);
     const now = Date.now();
+    const limRev = getLimit(LIM_REV_KEY, 100);   // 0 = 不限量（只用于截取队列长度，绝不作除数）
+    // v33.1 F03/F04（架构评审）：断签宽恕改在「队列层」处理——按到期先后排序、
+    // 今天从最旧的开始背，但**绝不改写任何 due**（v32 的自动分期在不限量时除零
+    // 产生 Infinity due，属无效日期）；欠账是真实存在的，限额截断时在完成页如实
+    // 告知剩余量，不用改 due 美化。
+    // F04 旧数据兼容：v32 前的 progress 没有 inSrs 字段，按学习证据推导复习资格，
+    // 不让老复习题掉出「新卡/复习」两个队列（读时推导，不改写历史数据）
+    const activeState = (p) => !!(p && (p.inSrs || (p.reps || 0) > 0 || (p.interval || 0) > 0 ||
+      p.lastReviewed || (p.practice && (p.practice.wrong || 0) > 0) || (p.exam && (p.exam.wrong || 0) > 0)));
+    const dueOf = (p) => (p && isFinite(p.due)) ? p.due : now;   // 无效日期按待复习处理（可见，不静默消失）
+    const map = {}; progs.forEach(p => map[p.qid] = p);
     // opts.all：错题本进来时不按记忆曲线过滤，错的全部过一遍
-    let due = opts.all ? S.pool.slice() : S.pool.filter(q => !map[q.id] || map[q.id].due <= now);
-    if (!due.length) due = S.pool.slice(); // 全部复习完 -> 全部过一遍
-    mem = { list: shuffle(due), i: 0, map, startAt: Date.now(), timer: null, title: opts.title || '背题', maxSeen: 1, skippedN: 0, review: false };
+    const dueList = opts.all ? S.pool.slice() : S.pool.filter(q => !map[q.id] || map[q.id].due <= now);
+    let list;
+    let title = opts.title || '背题';
+    let donePage = null;                   // v32 A1：限额到顶 → 今日完成页
+    if (opts.plan === 'all') {
+      // v30：全书过卡（系统方案）——到期卡优先，其余按目录原顺序跟上；
+      // 每张照常评分走 SM-2，记住间隔翻倍、忘记明天重来，整本书按记忆曲线滚动作息
+      // （用户点名要整本过，不吃每日限额）
+      const dueSet = new Set(dueList.map(q => q.id));
+      const rest = S.pool.filter(q => !dueSet.has(q.id));
+      list = dueList.concat(rest);
+      title = opts.title || '背书·全书过卡';
+    } else if (opts.all) {
+      list = shuffle(dueList);
+    } else {
+      // v32 A1：到期复习受每日限额保护——复习 limRev / 新卡 limNew，今天已背的先扣掉
+      const day = memDay();
+      const limNew = getLimit(LIM_NEW_KEY, 20);
+      const reviewing = S.pool.filter(q => activeState(map[q.id]));          // v33.1 F04：推导口径
+      const fresh = S.pool.filter(q => !map[q.id]);
+      const reviewLeft = limRev ? Math.max(0, limRev - (day.review || 0)) : Infinity;   // 0=不限量显式分支
+      const freshLeft = limNew ? Math.max(0, limNew - (day.fresh || 0)) : Infinity;
+      // v33.1 F03：复习队列按到期先后排（积压最旧的先见），不 shuffle、不写 due
+      const rawReview = reviewing.filter(q => dueOf(map[q.id]) <= now)
+        .sort((x, y) => dueOf(map[x.id]) - dueOf(map[y.id]));
+      const rawFresh = shuffle(fresh);
+      list = rawReview.slice(0, reviewLeft).concat(rawFresh.slice(0, freshLeft));
+      // 限额到顶但确实还有活 → 今日完成页（庆祝 + 预告明天）
+      if (!list.length && (rawReview.length || rawFresh.length)) {
+        donePage = { today: (day.review || 0) + (day.fresh || 0),
+                     tomorrow: rawReview.length + Math.min(rawFresh.length, limNew || rawFresh.length) };
+      }
+    }
+    mem = { list: list, i: 0, map, startAt: Date.now(), timer: null, title: title, maxSeen: 1, skippedN: 0, review: false, undoStack: [], donePage: donePage };
     setBack('bank', '‹ 题库');
-    $('#title').textContent = opts.title || '背题';
+    $('#title').textContent = title;
     renderMemorize();
   }
   function renderMemorize() {
     const view = $('#view-study'); showView('study');
     if (mem) mem.locked = false;          // v14：每题渲染时解锁，防止连点跳两题
+    if (mem.keyHandler) { document.removeEventListener('keydown', mem.keyHandler); mem.keyHandler = null; }   // v32 A6：换卡/离开时摘掉快捷键
+    if (mem.donePage) {                   // v32 A1：每日限额到顶——「今日完成」仪式页（Anki 式闭合感）
+      const d = mem.donePage;
+      stopTimer(mem);
+      clearResume();
+      SFX.done();
+      view.innerHTML = `<div class="empty"><div style="font-size:44px">🎯</div>今日任务完成！<br>` +
+        `<span class="muted">今天已背 ${d.today} 张 · 明天约有 <b>${d.tomorrow}</b> 张到期<br>到点会自动安排，不用惦记</span></div>` +
+        `<div class="btn-row" style="margin-top:16px">` +
+        `<button class="btn" onclick="location.reload()">返回</button>` +
+        `<button class="btn secondary" id="memMore">再背一组（不限额）</button></div>`;
+      $('#memMore').onclick = () => startMemorize({ plan: 'all', title: '加练·不限额' });
+      return;
+    }
     if (mem.i >= mem.list.length) {
       const used = fmtElapsed(Date.now() - (mem.startAt || Date.now()));
       stopTimer(mem);                     // v21：本轮计时停止
@@ -861,6 +1033,14 @@
     const q = mem.list[mem.i];
     const total = mem.list.length;
     saveResume('memorize', mem);     // v23：每卡存档，退出可续
+    // v32 A2：评分按钮预览下次间隔（Anki 调研——让每个选择的后果可见；
+    // 用副本试算，不污染真进度；实际评分另有 ±5% 抖动，预览为近似值）
+    const pvBase = mem.map[q.id] || { qid: q.id, bankId: S.bank.id, ease: 2.5, interval: 0, reps: 0, due: 0, lapses: 0 };
+    const memPv = {};
+    [1, 3, 5].forEach(qv => {
+      const iv = sm2(Object.assign({}, pvBase), qv).interval;
+      memPv[qv] = '(' + (iv >= 1 ? iv + '天' : '当天') + ')';
+    });
     // v28：卡片带章节路径面包屑（背书场景一眼知道在背哪个岗位的话术）
     const chapterLine = (q.chapterPath && q.chapterPath.length)
       ? `<div class="card-chapter">📖 ${esc(q.chapterPath.join(' › '))}</div>` : '';
@@ -904,9 +1084,12 @@
       `</div>` +
       `<div id="rateArea" class="hidden">` +
       `<div class="rate-row">` +
-      `<button class="btn rate-forget" data-q="1">😵 忘记</button>` +
-      `<button class="btn rate-dim" data-q="3">🤔 模糊</button>` +
-      `<button class="btn rate-know" data-q="5">😎 记住</button>` +
+      `<button class="btn rate-forget" data-q="1">😵 忘记${memPv[1]}</button>` +
+      `<button class="btn rate-dim" data-q="3">🤔 模糊${memPv[3]}</button>` +
+      `<button class="btn rate-know" data-q="5">😎 记住${memPv[5]}</button>` +
+      `</div>` +
+      `<div class="rate-sub">键盘 1/2/3 评分 · Z 撤销上一张` +
+      (mem.undoStack && mem.undoStack.length ? ` · <button id="memUndo" class="linkbtn">↩︎ 撤销（${mem.undoStack.length}）</button>` : ``) +
       `</div></div>` +
       `</div>`;
     // v28：回看判定——处于回看状态且还没走到最前的那张卡时，只展示不评分
@@ -953,22 +1136,55 @@
       $('#card').onclick = flip;
     }
     startTimerChip(mem);           // v21：本轮用时 chip（回看也照常走会话计时）
-    $('#rateArea').querySelectorAll('button').forEach(b => {
-      b.onclick = async () => {
-        if (mem.locked) return;            // v14：写库期间锁点击，防连点连跳两题
-        mem.locked = true;
-        const qv = +b.dataset.q;
-        if (qv <= 1) SFX.wrong();          // v22：自评音效——忘记/模糊/记住
-        else if (qv >= 5) SFX.right();
-        else SFX.neutral();
-        let p = mem.map[q.id] || { qid: q.id, bankId: S.bank.id, ease: 2.5, interval: 0, reps: 0, due: 0, lapses: 0 };
-        p = sm2(p, qv);
-        mem.map[q.id] = p;
-        await DB.saveProgress(p);
-        safe(DB.logSessions([{ bankId: S.bank.id, qid: q.id, mode: 'memorize', right: qv >= 3, ms: Date.now() - (mem.renderedAt || Date.now()) }]), '记录作答流水失败');
-        mem.i++; renderMemorize();
-      };
-    });
+    const rateCard = async (qv) => {
+      if (mem.locked) return;              // v14：写库期间锁点击，防连点跳两题
+      mem.locked = true;
+      if (qv <= 1) SFX.wrong();            // v22：自评音效——忘记/模糊/记住
+      else if (qv >= 5) SFX.right();
+      else SFX.neutral();
+      let p = mem.map[q.id] || { qid: q.id, bankId: S.bank.id, ease: 2.5, interval: 0, reps: 0, due: 0, lapses: 0 };
+      // v32 A6：撤销栈——评分前快照（限 10 层），误评可回滚（SM-2 的 EF 被错评污染代价高）
+      mem.undoStack = mem.undoStack || [];
+      mem.undoStack.push({ idx: mem.i, prev: JSON.parse(JSON.stringify(p)), wasNew: !p.inSrs });
+      if (mem.undoStack.length > 10) mem.undoStack.shift();
+      p = sm2(p, qv);
+      // v32 A6：Fuzz 间隔抖动 ±5%（Anki 同款）——防同批卡永远同天到期形成复习洪峰
+      p.interval = Math.max(1, Math.round(p.interval * (0.95 + Math.random() * 0.10)));
+      p.due = Date.now() + p.interval * 86400000;
+      p.inSrs = true;                      // v32 A3：评过分的卡正式进入记忆曲线循环
+      mem.map[q.id] = p;
+      await DB.saveProgress(p);
+      bumpMemDay(mem.undoStack[mem.undoStack.length - 1].wasNew ? 'fresh' : 'review');   // v32 A1：当日计数
+      safe(DB.logSessions([{ bankId: S.bank.id, qid: q.id, mode: 'memorize', right: qv >= 3, ms: Date.now() - (mem.renderedAt || Date.now()) }]), '记录作答流水失败');
+      mem.i++; renderMemorize();
+    };
+    const doUndo = async () => {
+      if (!mem.undoStack || !mem.undoStack.length || mem.locked) return;
+      const snap = mem.undoStack.pop();
+      mem.locked = true;
+      await safe(DB.saveProgress(snap.prev), '撤销失败');
+      try {                                // 当日计数回退
+        const c = memDay();
+        c[snap.wasNew ? 'fresh' : 'review'] = Math.max(0, (c[snap.wasNew ? 'fresh' : 'review'] || 0) - 1);
+        localStorage.setItem(MEMDAY_KEY, JSON.stringify(c));
+      } catch (e) {}
+      mem.map[snap.prev.qid] = snap.prev;
+      mem.i = snap.idx;
+      toast('已撤销上一张的评分');
+      renderMemorize();
+    };
+    $('#rateArea').querySelectorAll('button[data-q]').forEach(b => { b.onclick = () => rateCard(+b.dataset.q); });
+    const ub = $('#memUndo');
+    if (ub) ub.onclick = () => safe(doUndo(), '撤销失败');
+    // v32 A6：键盘快捷键——空格/回车翻面；1/2/3 评分；Z 撤销（复习中有效）
+    mem.keyHandler = (e) => {
+      if (mem.review) return;
+      const k = e.key;
+      if (!flipped && (k === ' ' || k === 'Enter')) { e.preventDefault(); flip(); }
+      else if (flipped && (k === '1' || k === '2' || k === '3')) { e.preventDefault(); rateCard(+k === 1 ? 1 : (+k === 2 ? 3 : 5)); }
+      else if (flipped && (k === 'z' || k === 'Z')) { e.preventDefault(); safe(doUndo(), '撤销失败'); }
+    };
+    document.addEventListener('keydown', mem.keyHandler);
   }
 
   // ---------- 刷题模式 ----------
@@ -976,8 +1192,11 @@
   async function startPractice(opts) {
     opts = opts || {};
     stopTimer(prac);                        // v21：防上一轮的 interval 泄漏
-    prac = { list: shuffle(S.pool), i: 0, wrong: [], correct: 0, wrongIds: [], skipped: [], results: [], title: opts.title || '刷题', startAt: Date.now(), timer: null };
-    setBack('bank', '‹ 题库');
+    // v30：随机（默认，老行为）/ 按原顺序 —— 用户点名要能选
+    const pool = (opts.order === 'seq') ? S.pool.slice() : shuffle(S.pool);
+    prac = { list: pool, i: 0, wrong: [], correct: 0, wrongIds: [], skipped: [], results: [], title: opts.title || '刷题', startAt: Date.now(), timer: null };
+    // v31：跨库混合态没有具体题库，返回走首页（S.back 非.bank 即回首页分支）
+    setBack(S.mixed ? 'mixed' : 'bank', S.mixed ? '‹ 首页' : '‹ 题库');
     $('#title').textContent = prac.title;
     renderPractice();
   }
@@ -1153,7 +1372,7 @@
     const wasSkip = prac.results[prac.i] === 'skip';
     prac.results[prac.i] = { right: right, picked: picked };
     if (wasSkip) prac.skipped = prac.skipped.filter(id => id !== q.id);
-    safe(DB.logSessions([{ bankId: S.bank.id, qid: q.id, mode: 'practice', right: right, ms: Date.now() - (prac.renderedAt || Date.now()) }]), '记录作答流水失败');
+    safe(DB.logSessions([{ bankId: (S.mixed && q.bankId) ? q.bankId : S.bank.id, qid: q.id, mode: 'practice', right: right, ms: Date.now() - (prac.renderedAt || Date.now()) }]), '记录作答流水失败');
 
     // 先让用户可以继续，再写库 —— 存储失败绝不能把人卡死在这一题
     $('#nextWrap').classList.remove('hidden');
@@ -1168,7 +1387,7 @@
     };
 
     await safe((async () => {
-      let p = await DB.getProgress(q.id) || { qid: q.id, bankId: S.bank.id, ease: 2.5, interval: 0, reps: 0, due: 0, lapses: 0 };
+      let p = await DB.getProgress(q.id) || { qid: q.id, bankId: (S.mixed && q.bankId) ? q.bankId : S.bank.id, ease: 2.5, interval: 0, reps: 0, due: 0, lapses: 0 };
       p.practice = p.practice || { correct: 0, wrong: 0 };
       if (right) {
         p.practice.correct++;
@@ -1181,7 +1400,14 @@
         p.lastWrong = Date.now();       // 错题本排序用
         p.wrongDismissed = false;       // 曾被移除的再答错要收回来
       }
-      p.due = Date.now(); // 刷题后立即可在背题里复习
+      // v32 A3（Anki 调研：错误驱动所有权）：客观题答对不进长期记忆循环（due 推远），
+      // 答错 / 回忆型自评题（检索收益高）立即可复习；已在 SRS 里的卡不被刷题答对驱逐
+      if (right && !Scoring.isSelfAssess(q)) {
+        if (!p.inSrs) p.due = Date.now() + 3650 * 86400000;
+      } else {
+        p.inSrs = true;
+        p.due = Date.now();
+      }
       await DB.saveProgress(p);
     })(), '保存进度失败');
   }
@@ -1225,7 +1451,7 @@
       renderPractice();
     };
     $('#redoPrac').onclick = () => startPractice({ title: prac.title });
-    $('#backBank').onclick = () => openBank(S.bank.id);
+    $('#backBank').onclick = () => { if (S.mixed) { S.mixed = false; openHomeView(); } else openBank(S.bank.id); };
   }
 
   // ---------- 考试模式 ----------
@@ -1469,6 +1695,14 @@
     bar.classList.remove('hidden');
     $('#rangeSeg').querySelectorAll('button').forEach(x => x.classList.toggle('on', x.dataset.v === 'all'));
     $('#chapterPicker').classList.add('hidden');
+    // v30：按模式显示「做题顺序」/「背书方案」选项段，并复位默认项
+    const segOn = (sel, v) => $(sel).querySelectorAll('button').forEach(x => x.classList.toggle('on', x.dataset.v === v));
+    $('#orderSeg').classList.toggle('hidden', mode !== 'practice');
+    $('#planSeg').classList.toggle('hidden', mode !== 'memorize');
+    if (mode === 'practice') segOn('#orderSeg', 'rand');
+    if (mode === 'memorize') segOn('#planSeg', 'due');
+    $('#orderSeg').querySelectorAll('button').forEach(b => b.onclick = () => segOn('#orderSeg', b.dataset.v));
+    $('#planSeg').querySelectorAll('button').forEach(b => b.onclick = () => segOn('#planSeg', b.dataset.v));
     buildChapterPicker();
     updateRangeHint();
     $('#rangeStart').onclick = () => {
@@ -1484,7 +1718,13 @@
       }
       bar.classList.add('hidden');
       clearModeSel();
-      startMode(S.pendingMode, list);
+      // v30：带上顺序（刷题）/ 方案（背题）
+      const ordBtn = $('#orderSeg').querySelector('button.on');
+      const planBtn = $('#planSeg').querySelector('button.on');
+      startMode(S.pendingMode, list, {
+        order: S.pendingMode === 'practice' ? (ordBtn ? ordBtn.dataset.v : 'rand') : null,
+        plan: S.pendingMode === 'memorize' ? (planBtn ? planBtn.dataset.v : 'due') : null
+      });
     };
     bar.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
   }
@@ -1738,6 +1978,7 @@
   // 顶部横幅「继续上次 · 第 N/M 题」一键接着做。考试有时限语义，不做续刷。
   const RESUME_KEY = 'resume-session';
   function saveResume(kind, holder) {
+    if (S.mixed) return;                     // v31：跨库会话不做断点续刷（恢复逻辑绑定单库）
     try {
       localStorage.setItem(RESUME_KEY, JSON.stringify({
         kind: kind, bankId: S.bank.id, title: holder.title || '',
@@ -1809,7 +2050,7 @@
   }
   // 恢复/合并后数据整体变了：一律回首页重走，避免停留在已被替换的旧题库视图上
   function refreshAfterRestore() {
-    S.bank = null; S.questions = []; S.pool = []; S.outline = [];
+    S.bank = null; S.questions = []; S.pool = []; S.outline = []; S.mixed = false;
     setBack('home');
     $('#title').textContent = '国际法题库';
     showView('home');
@@ -2027,8 +2268,41 @@
       $('#goalSeg').querySelectorAll('button').forEach(x => x.classList.toggle('on', x === b));
       safe(renderHomeStats(), '刷新统计失败');
     });
+    // v32 A1：每日限额段（打开目标弹层时同步高亮）
+    const syncLimSegs = () => {
+      [['#limNewSeg', LIM_NEW_KEY, 20], ['#limRevSeg', LIM_REV_KEY, 100]].forEach(([sel, key, dft]) => {
+        const cur = String(getLimit(key, dft));
+        $(sel).querySelectorAll('button').forEach(b => b.classList.toggle('on', b.dataset.v === cur));
+      });
+    };
+    syncLimSegs();
+    [['#limNewSeg', LIM_NEW_KEY, 20], ['#limRevSeg', LIM_REV_KEY, 100]].forEach(([sel, key]) => {
+      $(sel).querySelectorAll('button').forEach(b => b.onclick = () => {
+        localStorage.setItem(key, String(+b.dataset.v));
+        $(sel).querySelectorAll('button').forEach(x => x.classList.toggle('on', x === b));
+        toast('已保存，明天生效');
+      });
+    });
     $('#goalModalClose').onclick = () => $('#goalModal').classList.add('hidden');
     $('#goalModal').onclick = (e) => { if (e.target === $('#goalModal')) $('#goalModal').classList.add('hidden'); };
+    // v31：跨库刷题弹层
+    $('#mixEntry').onclick = () => safe(openMixModal(), '打开跨库刷题失败');
+    $('#mixTypeSeg').querySelectorAll('button').forEach(b => b.onclick = () => {
+      $('#mixTypeSeg').querySelectorAll('button').forEach(x => x.classList.toggle('on', x === b));
+      safe(updateMixHint(), '统计失败');
+    });
+    $('#mixOrderSeg').querySelectorAll('button').forEach(b => b.onclick = () => {
+      $('#mixOrderSeg').querySelectorAll('button').forEach(x => x.classList.toggle('on', x === b));
+    });
+    $('#mixAll').onclick = () => {
+      const boxes = Array.from($('#mixBanks').querySelectorAll('input'));
+      const allOn = boxes.every(b => b.checked);
+      boxes.forEach(b => { b.checked = !allOn; });
+      safe(updateMixHint(), '统计失败');
+    };
+    $('#mixStart').onclick = () => safe(startMixed(), '开始跨库刷题失败');
+    $('#mixModalClose').onclick = () => $('#mixModal').classList.add('hidden');
+    $('#mixModal').onclick = (e) => { if (e.target === $('#mixModal')) $('#mixModal').classList.add('hidden'); };
     // v27：考试计划弹层 —— 考试信息 / 目标增删勾 / 一键三阶段
     $('#examSave').onclick = () => safe((async () => {
       const date = $('#examDate').value;

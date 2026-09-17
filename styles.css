@@ -990,3 +990,25 @@ body {
   width: 100%; padding: 9px 10px; border: 1px solid var(--line); border-radius: 10px;
   background: var(--surface); color: var(--text); font-size: 16px; margin-top: 8px;
 }
+
+/* ===== v30：错题本历史行 / 已移除徽标 / 题库改名按钮 ===== */
+.wb-hist { font-size: 12px; color: var(--muted); margin: -4px 0 8px; }
+.wb-badge-del { background: #efe3e0; color: #a05548; }
+.bank-card .ren { float: right; color: var(--primary); font-size: 13px; cursor: pointer; margin-right: 10px; }
+
+/* ===== v31：跨库刷题入口卡 ===== */
+.mix-entry {
+  background: var(--surface); border: 1px dashed var(--line-primary-strong, var(--line));
+  border-radius: 14px; padding: 14px 16px; margin-top: 14px; cursor: pointer;
+  font-weight: 650; font-size: 14px; color: var(--primary); text-align: center;
+}
+
+/* ===== v32：A1-A6 视觉 ===== */
+.rate-sub { text-align: center; font-size: 12px; color: var(--muted); margin-top: 8px; }
+.rate-sub .linkbtn { border: none; background: none; color: var(--primary); font-size: 12px; cursor: pointer; padding: 0; font-weight: 700; }
+.hs-heat { display: flex; gap: 3px; align-items: center; margin: 8px 0 2px; }
+.hs-heat .hh { width: 14px; height: 14px; border-radius: 3px; background: var(--seg-bg); }
+.hs-heat .hh1 { background: #cfe3c8; }
+.hs-heat .hh2 { background: #8fc484; }
+.hs-heat .hh3 { background: #4e9a55; }
+.hs-heat .hh-lab { font-size: 11px; color: var(--muted); margin-left: 4px; }
