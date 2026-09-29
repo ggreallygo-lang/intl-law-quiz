@@ -211,6 +211,8 @@
         <input type="file" id="bgmFile" accept="audio/*" class="hidden">
         <div class="muted" style="font-size:12px;margin-top:4px">支持 mp3 / m4a / ogg / wav，存在本机不联网</div>
       </div>
+      <!-- v34.3：导出题库清洗规则（给外部 AI 的导入规范） -->
+      <button class="btn secondary" id="exportRulesBtn">📤 导出清洗规则（AI 导入规范）</button>
       <button class="btn ghost" id="sfxModalClose">关闭</button>
     </div>
   </div>
@@ -318,6 +320,7 @@
   <script src="db.js"></script>
   <script src="parser.js"></script>
   <script src="slicer.js"></script>
+  <script src="scheduler.js"></script>
   <script src="scoring.js"></script>
   <script src="sfx.js"></script>
   <script src="bgm.js"></script>

@@ -1,31 +1,39 @@
 /* sw.js — 缓存应用外壳，离线可用 */
 /*
- * v5 稳定性改动：
- *   1. addAll(SHELL) 改成逐个 put + 容错。
- *      原因：addAll 是「要么全成功要么全失败」，SHELL 里任何一个资源 404
- *      （比如 icon.svg 被误删），整个 install 就失败、SW 永不激活，离线能力全废。
- *      改成逐个 put 后，缺哪个资源只影响那个资源，其余照常缓存。
- *   2. 只缓存同源资源，且限制到 SHELL 白名单，避免缓存无限增长。
- *   3. 缓存前缀化：换版本时按前缀清理旧缓存，不再依赖精确名字匹配。
+ * v33.2 F07（架构评审）：SW 完整性
+ *   1. 核心/装饰资源分级：CORE（页面+全部 JS/CSS）缺一个就拒绝激活——半安装的新版
+ *      比旧版更糟（离线时点开就是死链）。DECOR（图标/底图/manifest）失败可容忍。
+ *      取代 v5 的「逐个 put 全部容错」——那个方案下 app.js 缺失照样激活。
+ *   2. fetch 只缓存 SHELL 白名单内的 GET（v5 注释声称白名单、实际缓存一切同源成功响应）。
+ *   3. 离线回退 HTML 只用于导航请求；JS/CSS 等子资源离线时绝不能回退成 index.html
+ *      （否则控制台一片 MIME 错误、页面假死）。
  */
-const CACHE = 'card-quiz-v33';   // v33.1 架构评审修复：F01考试错题回流统一；F02合并保快照字段；F03不再改写due+日期护栏；F04旧数据资格推导内置曲
+const CACHE = 'card-quiz-v34';   // v34.1：scheduler 纯模块抽出；忘记当日重学（隔≥3张回来）
                                  // 注意：本 SW 对同源资源是 cache-first，改了 styles.css/app.js
                                  // 必须同步改这里，否则老用户永远拿到旧样式。
 const PREFIX = 'card-quiz-';
-const SHELL = [
+const CORE = [
   './', './index.html', './styles.css',
-  './app.js', './db.js', './parser.js', './scoring.js', './slicer.js', './sfx.js', './bgm.js',
-  './manifest.webmanifest', './icon.svg',
-  './bg-light.webp', './bg-dark.webp'
+  './app.js', './db.js', './parser.js', './scoring.js', './slicer.js', './scheduler.js', './sfx.js', './bgm.js'
 ];
+const DECOR = ['./manifest.webmanifest', './icon.svg', './bg-light.webp', './bg-dark.webp'];
+const SHELL = CORE.concat(DECOR);
 
 self.addEventListener('install', (e) => {
   e.waitUntil((async () => {
     const c = await caches.open(CACHE);
-    // 逐个 put：单个资源失败不影响整体
-    await Promise.all(SHELL.map(url =>
-      c.add(url).catch(err => { console.warn('[sw] 缓存失败，已跳过：', url, err); })
+    // 核心：一个都不能少。任何一个失败 → 抛错让 install 失败，旧版本继续服务
+    const failed = [];
+    await Promise.all(CORE.map(url =>
+      c.add(url).catch(() => { failed.push(url); })
     ));
+    if (failed.length) {
+      // 清掉本次已写进去的半截缓存（caches.open 后成功的 add 已落盘），再让 install 失败
+      await caches.delete(CACHE).catch(() => {});
+      throw new Error('[sw] 核心资源缓存失败，拒绝激活：' + failed.join(','));
+    }
+    // 装饰：尽力而为，缺了只影响观感
+    await Promise.all(DECOR.map(url => c.add(url).catch(err => { console.warn('[sw] 装饰资源缓存失败（可容忍）：', url, err); })));
     await self.skipWaiting();
   })());
 });
@@ -43,15 +51,27 @@ self.addEventListener('fetch', (e) => {
   const url = new URL(e.request.url);
   // 只处理同源请求：跨域资源（字体、图片 CDN）缓存了反而容易出问题
   if (url.origin !== self.location.origin) return;
+  const inShell = SHELL.some(u => url.pathname === new URL(u, self.location.href).pathname);
 
+  if (e.request.mode === 'navigate') {
+    // 导航请求：缓存优先，离线回退到已缓存的外壳页
+    e.respondWith(
+      caches.match(e.request).then(hit => hit || fetch(e.request).catch(() => caches.match('./')))
+    );
+    return;
+  }
+  if (!inShell) {
+    // 白名单外：直接走网络，不读缓存也不写缓存（防缓存无限增长/意外内容入库）
+    return;
+  }
+  // 白名单子资源：cache-first，未命中时回源并回填
   e.respondWith(
     caches.match(e.request).then(hit => hit || fetch(e.request).then(res => {
-      // 只缓存成功响应，且不透明响应（opaque）体积不可控，跳过
       if (res && res.ok && res.type === 'basic') {
         const copy = res.clone();
         caches.open(CACHE).then(c => c.put(e.request, copy)).catch(() => {});
       }
       return res;
-    }).catch(() => caches.match('./index.html')))
+    }))
   );
 });

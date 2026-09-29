@@ -112,19 +112,12 @@
   }
 
   // ---------- SM2 记忆曲线 ----------
-  function sm2(p, q) {
-    p = p || { ease: 2.5, interval: 0, reps: 0, due: 0, lapses: 0 };
-    if (q < 3) { p.reps = 0; p.interval = 1; p.lapses = (p.lapses || 0) + 1; }
-    else {
-      if (p.reps === 0) p.interval = 1;
-      else if (p.reps === 1) p.interval = 6;
-      else p.interval = Math.round(p.interval * p.ease);
-      p.reps++;
-    }
-    p.ease = Math.max(1.3, p.ease + (0.1 - (5 - q) * (0.08 + (5 - q) * 0.02)));
-    p.due = Date.now() + p.interval * 86400000;
-    p.lastReviewed = Date.now();
-    return p;
+  // v34.1：核心算法迁至 scheduler.js（纯函数、now/rand 注入，Node 可单测）。
+  // 兼容层：app 内引用统一走 Scheduler；lastReviewed 由调用方补（调度器不碰时钟）。
+  function sm2Apply(p, q) {
+    const r = Scheduler.applyRating(p, q);          // SM-2 + Fuzz + due
+    r.state.lastReviewed = Date.now();
+    return r.state;
   }
 
   // ---------- 题库列表（首页） ----------
@@ -311,6 +304,10 @@
         `<button class="pg-del" data-del="${g.id}">删除</button></div></div>`;
     }).join('');
   }
+
+  // ---------- v34.3：题库清洗规则（写给外部 AI 的导入规范，设置里可导出） ----------
+  // 容错口径：文档强调「推荐写法+自动容错」，不是要求一字不差（用户明确要求）
+  const CLEAN_RULES_MD = "# LEXA 题库导入规范（清洗规则·容错版 v2）\n\n> 写给 AI 或人工：把脏资料（Word/PDF/网页/笔记）整理成 LEXA 刷题 App 可导入的 Markdown。\n> **先说结论：App 的解析器有五层自动清洗和容错，以下都是「推荐写法」而非硬性要求——\n> 大方向对了就能导入，细节 App 会自动兜底。** 只有第三节的两条是硬性的。\n\n## 一、App 会自动容错的事（你不用操心）\n\n1. **水印/推广自动删**：公众号、微信号、扫码关注、更多资料、免费领取、QQ群等\n   整行自动剥离；标题尾部括号里的水印片段自动剪掉。\n2. **页眉页脚自动删**：「国际法试题 第1页(共5页)」这类短行。\n3. **考卷套话自动删**：「绝密★启用前」「注意事项：」等。\n4. **行内选项自动拆**：「A.北京 B.上海 C.广州 答案B」挤在一行也能识别。\n5. **卷尾答案自动回填**：试卷末尾集中答案区（「1.B 2.AC 3.对」）按题号自动配对。\n6. **格式随意**：CRLF/LF 换行、全角半角标点、题号 1. / 1、/ 1． / 一、 / １. 都行\n   （全角数字和字母自动归一）；选项键大小写随意（自动转大写并校验连续性）。\n7. **缺答案不丢题**：没识别到答案的题保留并标「⚠️ 没识别到答案」，可在 App 内\n   点 ✏️ 补上——所以**宁缺答案也不要编造答案**。\n8. **多级章节自动建树**：## ### #### 任意层级，背题卡自动带章节路径。\n9. **话术问答体直接导入（v2 新增）**：「1. 旅客：在哪里打车？/ 回答：您好……」\n   这种带编号的问答，**原样粘贴即可**，「回答：」自动识别为答案行。\n10. **无编号问答自动切题（v2 新增）**：整篇没有题号、只有「旅客：…/回答：…」\n    或「问：…/答：…」「Q:/A:」的访谈/话术原稿，App 自动按问答对切题加编号。\n\n## 二、推荐写法（六种题型，照抄结构即可）\n\n### 单选题 / 多选题（自动识别）\n1. 题干文字\n   A. 选项一\n   B. 选项二\n   C. 选项三\n   D. 选项四\n   答案：A\n\n（多选写「答案：ABC」；选项分行或挤一行都行。）\n\n### 判断题\n1. 题干陈述句\n   答案：对\n\n（对/错、正确/错误、√/×、T/F 都认。）\n\n### 填空题\n1. 《联合国宪章》第2条规定了（　）项原则。\n   答案：7\n\n（或直接写「……规定了（7）项原则。」；含「共N分/本大题/每小题/答题卡」的\n括号是试卷套话，自动忽略。）\n\n### 名词解释（翻卡：正面术语/背面定义）\n1. 领海：国家主权及于其陆地领土及内水以外邻接的领海……\n\n### 简答题 / 论述 / 背书问答（自评卡：先想后翻，背话术最合适）\n1. 旅客：我在这里打车，车会上来接我吗？\n   答案：您好，您可以联系司机确认……（完整话术，可多行多段）\n\n（「回答：」「答：」都行；分支情况用【】标记写进答案，如\n【如遇旅客不清楚航班】您好，……）\n\n## 三、仅有的两条硬性要求\n\n1. **纯文本 Markdown、UTF-8 编码**（Word 另存 .txt/.md 或直接粘贴文本；\n   App 不解析图片、表格、公式——转成文字描述或删除）。\n2. **题与题之间要有可切分的边界**：编号 / 问答对（旅客：/问：/Q:）二者必有其一。\n   既没编号又不是问答体的无结构大段文字，会被当成名词解释或忽略——这是唯一\n   会丢内容的坑（保底办法：给每题加个 1. 2. 3. 编号即可）。\n\n## 四、清洗源头时建议顺手做的（不做 App 也会兜）\n\n- 删掉图片/表格/公式。\n- 修正明显 OCR 乱码（同音字、断行断字）。\n- 段落按题目断行，别整篇连一行。\n\n## 五、交付自检（30 秒）\n\n- 导入后 App 首页题数 ≈ 你整理的题数（差几道去查边界缺失）。\n- 点开题库没有大片「⚠️ 没识别到答案」。\n- 目录树层级符合预期。\n\n（本规范由 LEXA App 导出生成，与当前版本解析引擎一致；解析器持续增强容错，\n新格式建议先小样试导。）\n";
 
   // ---------- v31：跨库刷题（多题库混合 + 题型筛选） ----------
   const MIX_TYPE_SETS = { choice: ['single', 'multiple'], judge: ['judge'], essay: ['essay', 'term', 'fill'] };
@@ -930,6 +927,9 @@
   let mem = null;
   // v32 A1：每日限额（localStorage，默认新卡 20 / 复习 100，0=不限）+ 当日已背计数
   const LIM_NEW_KEY = 'limit-new', LIM_REV_KEY = 'limit-review', MEMDAY_KEY = 'memday';
+  // v34.2 抽查池（架构评审 Q3：答对≠永久免检）：客观题答对进低频抽查，
+  // 间隔 30→90→180→360 天逐级拉长；抽查时忘了就转回主动复习（inSrs）
+  const SAMPLE_DAYS = [30, 90, 180, 360];
   function getLimit(key, dft) {
     const n = parseInt(localStorage.getItem(key) || '', 10);
     return (isNaN(n) || n < 0) ? dft : n;
@@ -990,6 +990,12 @@
       // v33.1 F03：复习队列按到期先后排（积压最旧的先见），不 shuffle、不写 due
       const rawReview = reviewing.filter(q => dueOf(map[q.id]) <= now)
         .sort((x, y) => dueOf(map[x.id]) - dueOf(map[y.id]));
+      // v34.2：抽查池到期卡并入（排在真复习之后，占用复习限额；量小不挤兑）
+      const samplingDue = S.pool.filter(q => {
+        const p = map[q.id];
+        return p && !p.inSrs && p.enrollment === 'sampling' && dueOf(p) <= now;
+      }).sort((x, y) => dueOf(map[x.id]) - dueOf(map[y.id]));
+      rawReview.push(...samplingDue);
       const rawFresh = shuffle(fresh);
       list = rawReview.slice(0, reviewLeft).concat(rawFresh.slice(0, freshLeft));
       // 限额到顶但确实还有活 → 今日完成页（庆祝 + 预告明天）
@@ -1033,14 +1039,22 @@
     const q = mem.list[mem.i];
     const total = mem.list.length;
     saveResume('memorize', mem);     // v23：每卡存档，退出可续
-    // v32 A2：评分按钮预览下次间隔（Anki 调研——让每个选择的后果可见；
-    // 用副本试算，不污染真进度；实际评分另有 ±5% 抖动，预览为近似值）
+    // v32 A2：评分按钮预览下次间隔（Anki 调研——让每个选择的后果可见）
+    // v34.1：走 Scheduler.previewIntervals（名义间隔；实际评分另有 ±5% 抖动，预览为近似值）
     const pvBase = mem.map[q.id] || { qid: q.id, bankId: S.bank.id, ease: 2.5, interval: 0, reps: 0, due: 0, lapses: 0 };
     const memPv = {};
-    [1, 3, 5].forEach(qv => {
-      const iv = sm2(Object.assign({}, pvBase), qv).interval;
-      memPv[qv] = '(' + (iv >= 1 ? iv + '天' : '当天') + ')';
-    });
+    if (pvBase && !pvBase.inSrs && pvBase.enrollment === 'sampling') {
+      // v34.2：抽查卡的按钮语义——忘了转重点复习；通过则拉长抽查间隔
+      const next = SAMPLE_DAYS[Math.min((pvBase.sampleStep || 0) + 1, SAMPLE_DAYS.length - 1)];
+      memPv[1] = '(转重点复习)';
+      memPv[3] = memPv[5] = '(' + next + '天后再查)';
+    } else {
+      const pv = Scheduler.previewIntervals(pvBase);
+      [1, 3, 5].forEach(qv => {
+        const iv = pv[qv];
+        memPv[qv] = '(' + (iv >= 1 ? iv + '天' : '当天') + ')';
+      });
+    }
     // v28：卡片带章节路径面包屑（背书场景一眼知道在背哪个岗位的话术）
     const chapterLine = (q.chapterPath && q.chapterPath.length)
       ? `<div class="card-chapter">📖 ${esc(q.chapterPath.join(' › '))}</div>` : '';
@@ -1144,31 +1158,69 @@
       else SFX.neutral();
       let p = mem.map[q.id] || { qid: q.id, bankId: S.bank.id, ease: 2.5, interval: 0, reps: 0, due: 0, lapses: 0 };
       // v32 A6：撤销栈——评分前快照（限 10 层），误评可回滚（SM-2 的 EF 被错评污染代价高）
+      // v33.2 F05：快照补 existed（原记录是否本不存在——撤销时删掉不留空壳）+ sessionId（撤销时作废流水）
       mem.undoStack = mem.undoStack || [];
-      mem.undoStack.push({ idx: mem.i, prev: JSON.parse(JSON.stringify(p)), wasNew: !p.inSrs });
+      const existed = !!mem.map[q.id];
+      const sid = DB.uid();
+      mem.undoStack.push({ idx: mem.i, prev: JSON.parse(JSON.stringify(p)), wasNew: !existed, existed: existed, sessionId: sid });
       if (mem.undoStack.length > 10) mem.undoStack.shift();
-      p = sm2(p, qv);
-      // v32 A6：Fuzz 间隔抖动 ±5%（Anki 同款）——防同批卡永远同天到期形成复习洪峰
-      p.interval = Math.max(1, Math.round(p.interval * (0.95 + Math.random() * 0.10)));
-      p.due = Date.now() + p.interval * 86400000;
-      p.inSrs = true;                      // v32 A3：评过分的卡正式进入记忆曲线循环
+      const samplingCard = !p.inSrs && p.enrollment === 'sampling';   // v34.2 抽查池
+      if (samplingCard && qv > 1) {
+        // 抽查通过：间隔逐级拉长（30→90→180→360 天），不进高频循环
+        p.sampleStep = Math.min((p.sampleStep || 0) + 1, SAMPLE_DAYS.length - 1);
+        p.due = Date.now() + SAMPLE_DAYS[p.sampleStep] * 86400000;
+        p.lastReviewed = Date.now();
+      } else {
+        if (samplingCard) p.inSrs = true;  // 抽查忘了 → 转回主动复习
+        p = sm2Apply(p, qv);               // v34.1：SM-2+Fuzz+due 一体（scheduler.js）
+        p.inSrs = true;                    // v32 A3：评过分的卡正式进入记忆曲线循环
+      }
       mem.map[q.id] = p;
-      await DB.saveProgress(p);
-      bumpMemDay(mem.undoStack[mem.undoStack.length - 1].wasNew ? 'fresh' : 'review');   // v32 A1：当日计数
-      safe(DB.logSessions([{ bankId: S.bank.id, qid: q.id, mode: 'memorize', right: qv >= 3, ms: Date.now() - (mem.renderedAt || Date.now()) }]), '记录作答流水失败');
+      // v33.2 F06：进度+流水一个事务落库；失败=整体没写，解锁让用户重点（重试不重复计数）
+      try {
+        await DB.commitStudy([p], [{ id: sid, bankId: S.bank.id, qid: q.id, mode: 'memorize',
+          right: qv >= 3, ms: Date.now() - (mem.renderedAt || Date.now()), ts: Date.now() }]);
+      } catch (e) {
+        reportErr('保存失败，请再评一次', e);
+        mem.undoStack.pop();
+        mem.locked = false;
+        return;
+      }
+      bumpMemDay(wasNewFlag(mem.undoStack) ? 'fresh' : 'review');   // v32 A1：当日计数（保存成功才计）
+      // v34.1 当日重学（架构评审 6.2）：评「忘记」的卡不就此别过——插回队列隔 ≥3 张
+      // 其他卡后重见（防照抄答案的掌握假象）；同一会话每卡最多重学一次防死循环；
+      // 重学评分照常写流水（总尝试计入，新卡额度不重复吃）
+      if (qv <= 1 && mem.list.length > 1) {
+        mem.relearned = mem.relearned || {};
+        if (!mem.relearned[q.id]) {
+          mem.relearned[q.id] = true;
+          const at = Math.min(mem.i + 4, mem.list.length);
+          mem.list.splice(at, 0, q);
+        }
+      }
       mem.i++; renderMemorize();
     };
+    function wasNewFlag(stack) { return stack[stack.length - 1].wasNew; }
     const doUndo = async () => {
       if (!mem.undoStack || !mem.undoStack.length || mem.locked) return;
       const snap = mem.undoStack.pop();
       mem.locked = true;
-      await safe(DB.saveProgress(snap.prev), '撤销失败');
+      // v33.2 F05：同事务恢复快照/删除空壳 + 作废对应流水——统计不再虚高
+      try {
+        await DB.undoStudy({ qid: snap.prev.qid, prev: snap.prev, existed: snap.existed, sessionId: snap.sessionId });
+      } catch (e) {
+        reportErr('撤销失败', e);
+        mem.undoStack.push(snap);
+        mem.locked = false;
+        return;
+      }
       try {                                // 当日计数回退
         const c = memDay();
         c[snap.wasNew ? 'fresh' : 'review'] = Math.max(0, (c[snap.wasNew ? 'fresh' : 'review'] || 0) - 1);
         localStorage.setItem(MEMDAY_KEY, JSON.stringify(c));
       } catch (e) {}
-      mem.map[snap.prev.qid] = snap.prev;
+      if (snap.existed) mem.map[snap.prev.qid] = snap.prev;
+      else delete mem.map[snap.prev.qid];  // 首学题撤销后回到「没学过」状态（新卡身份恢复）
       mem.i = snap.idx;
       toast('已撤销上一张的评分');
       renderMemorize();
@@ -1372,7 +1424,10 @@
     const wasSkip = prac.results[prac.i] === 'skip';
     prac.results[prac.i] = { right: right, picked: picked };
     if (wasSkip) prac.skipped = prac.skipped.filter(id => id !== q.id);
-    safe(DB.logSessions([{ bankId: (S.mixed && q.bankId) ? q.bankId : S.bank.id, qid: q.id, mode: 'practice', right: right, ms: Date.now() - (prac.renderedAt || Date.now()) }]), '记录作答流水失败');
+    // v33.2 F06：进度+流水一个事务（原先分两次写、流水还是 fire-and-forget，
+    // 中途退出会产生「有流水没进度」的两套事实）
+    const sessP = { id: DB.uid(), bankId: (S.mixed && q.bankId) ? q.bankId : S.bank.id, qid: q.id,
+      mode: 'practice', right: right, ms: Date.now() - (prac.renderedAt || Date.now()), ts: Date.now() };
 
     // 先让用户可以继续，再写库 —— 存储失败绝不能把人卡死在这一题
     $('#nextWrap').classList.remove('hidden');
@@ -1403,13 +1458,18 @@
       // v32 A3（Anki 调研：错误驱动所有权）：客观题答对不进长期记忆循环（due 推远），
       // 答错 / 回忆型自评题（检索收益高）立即可复习；已在 SRS 里的卡不被刷题答对驱逐
       if (right && !Scoring.isSelfAssess(q)) {
-        if (!p.inSrs) p.due = Date.now() + 3650 * 86400000;
+        // v34.2：答对不进高频复习，但进低频抽查池（30 天后第一次抽查）
+        if (!p.inSrs) {
+          p.enrollment = 'sampling';
+          p.sampleStep = 0;
+          p.due = Date.now() + SAMPLE_DAYS[0] * 86400000;
+        }
       } else {
         p.inSrs = true;
         p.due = Date.now();
       }
-      await DB.saveProgress(p);
-    })(), '保存进度失败');
+      await DB.commitStudy([p], [sessP]);            // v33.2 F06：单事务原子落库
+    })(), '保存失败');
   }
   function renderPracticeResult() {
     const total = prac.list.length;
@@ -1643,8 +1703,8 @@
     SFX.done();                            // v22：交卷收尾音
 
     // 结果已经渲染出来了再写库，存储失败不会挡住看成绩；失败只提示
-    await safe(DB.bulkUpdateProgress(S.bank.id, updates, 'exam'), '保存成绩失败');
-    safe(DB.logSessions(sessList), '记录作答流水失败');
+    // v33.2 F06：成绩+流水同事务（原先流水 fire-and-forget，可能一半有一半没有）
+    await safe(DB.bulkUpdateProgress(S.bank.id, updates, 'exam', sessList), '保存成绩失败');
     // v27：整卷模拟 +1（考试计划「冲刺」目标口径，v27 起累计）
     safe((async () => {
       await DB.setMeta('mockCount', ((await DB.getMeta('mockCount')) || 0) + 1);
@@ -1752,12 +1812,14 @@
     if (!c || !S.cleaned) return;
     S.cleaned.removedLines += c.removedLines || 0;
     S.cleaned.strippedLines += c.strippedLines || 0;
+    S.cleaned.qaPairs = (S.cleaned.qaPairs || 0) + (c.qaPairs || 0);   // v35：无编号问答自动切题数
   }
   function cleanedHint() {
     const c = S.cleaned;
     if (!c) return '';
     const n = c.removedLines + c.strippedLines;
-    return n ? `，自动清洗水印 ${n} 处` : '';
+    const qa = c.qaPairs || 0;
+    return (n ? `，自动清洗水印 ${n} 处` : '') + (qa ? `，自动切题 ${qa} 组` : '');
   }
 
   // 把解析结果落库（文件导入 / 粘贴导入共用）
@@ -1841,6 +1903,11 @@
     '原始文本：'
   ].join('\n');
 
+  // v34.3：导出清洗规则（设置弹层入口，给外部 AI 的导入规范）
+  function exportCleanRules() {
+    downloadText('LEXA-题库清洗规则.md', CLEAN_RULES_MD);
+    toast('已导出：LEXA-题库清洗规则.md');
+  }
   function downloadText(name, content) {
     const a = document.createElement('a');
     a.href = URL.createObjectURL(new Blob([content], { type: 'text/markdown;charset=utf-8' }));
@@ -2253,6 +2320,7 @@
       BGM.stop();
       if (BGM.enabled()) BGM.start();
     })(), '删除音乐失败');
+    $('#exportRulesBtn').onclick = () => { exportCleanRules(); };
     $('#sfxModalClose').onclick = () => $('#sfxModal').classList.add('hidden');
     $('#sfxModal').onclick = (e) => { if (e.target === $('#sfxModal')) $('#sfxModal').classList.add('hidden'); };
     // v24：每日目标 —— 点首页「今日 x/y 题」行弹设置（renderHomeStats 重渲，用委托）

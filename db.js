@@ -362,14 +362,20 @@
    * @param {'exam'|'practice'} [mode]
    * @returns {Promise<number>}
    */
-  async function bulkUpdateProgress(bankId, list, mode) {
+  async function bulkUpdateProgress(bankId, list, mode, sessionList) {
     const items = (list || []).filter(it => it && it.qid);   // 过滤脏数据，避免坏 key 拖垮整个事务
     if (!items.length) return 0;
     const field = mode === 'practice' ? 'practice' : 'exam';
     const db = await open();
+    const withSess = !!(sessionList && sessionList.length);
     return new Promise((resolve, reject) => {
-      const t = db.transaction('progress', 'readwrite');
+      // v33.2 F06：传了流水就同事务写（考试交卷：成绩+流水要么都在要么都不在）
+      const t = db.transaction(withSess ? ['progress', 'sessions'] : 'progress', 'readwrite');
       const s = t.objectStore('progress');
+      if (withSess) {
+        const sStore = t.objectStore('sessions');
+        sessionList.forEach(x => { if (x && x.qid) sStore.put(Object.assign({ id: uid(), bankId: bankId, right: false, ms: 0, ts: Date.now() }, x)); });
+      }
       items.forEach(it => {
         const g = s.get(it.qid);
         g.onsuccess = () => {
@@ -380,7 +386,13 @@
             p[field].correct++;
             // v24 错题毕业：连续答对计数 +1（达到 wrongGradN() 次自动移出错题本活跃清单）
             p.wrongStreak = (p.wrongStreak || 0) + 1;
-            // v33.1 F01：答对不强制改 due——已在复习中的保持原排期，未激活的保持免检
+            // v33.1 F01：答对不强制改 due——已在复习中的保持原排期。
+            // v34.2（评审 Q3）：考试答对的客观题进低频抽查池（30 天后首查），不是永久免检
+            if (!p.inSrs && !p.enrollment) {
+              p.enrollment = 'sampling';
+              p.sampleStep = 0;
+              p.due = Date.now() + 30 * 86400000;
+            }
           } else {
             p[field].wrong++;
             p.lapses = (p.lapses || 0) + 1;
@@ -686,6 +698,51 @@
     db.createObjectStore('meta', { keyPath: 'key' });
     return true;
   }
+  // ---------- v33.2 F05/F06（架构评审）：学习提交与撤销的原子事务 ----------
+  // 一个 IndexedDB 事务同时写 progress + sessions，oncomplete 才算保存成功——
+  // 消灭「有流水没进度」的两套事实。session.id 由调用方预生成（幂等键），
+  // 事务失败重试不会重复计数（失败=整体回滚，什么都没写）。
+  async function commitStudy(progressList, sessionList) {
+    const ps = (progressList || []).filter(p => p && p.qid);
+    const ss = (sessionList || []).filter(x => x && x.id && x.qid && x.mode);
+    if (!ps.length && !ss.length) return 0;
+    const db = await open();
+    return new Promise((resolve, reject) => {
+      const t = db.transaction(['progress', 'sessions'], 'readwrite');
+      const pStore = t.objectStore('progress'), sStore = t.objectStore('sessions');
+      ps.forEach(p => pStore.put(p));
+      ss.forEach(x => sStore.put(Object.assign({ bankId: null, right: false, ms: 0, ts: Date.now() }, x)));
+      t.oncomplete = () => resolve(ps.length + ss.length);
+      t.onerror = () => reject(t.error);
+      t.onabort = () => reject(t.error || new Error('事务被中止'));
+    });
+  }
+  // 撤销一次学习提交（同事务）：progress 恢复快照——原记录本不存在则删除（不留空壳，
+  // 否则撤销首学题后会留下 due=0 的僵尸记录、且该题不再算新题）；对应流水标 voided
+  // （统计层统一排除，物理保留供审计）。仅撤销该题最新一条未撤销流水（栈式纪律由调用方维护）。
+  async function undoStudy(o) {
+    if (!o || !o.qid) throw new Error('undoStudy 需要 qid');
+    const db = await open();
+    return new Promise((resolve, reject) => {
+      const t = db.transaction(['progress', 'sessions'], 'readwrite');
+      const pStore = t.objectStore('progress'), sStore = t.objectStore('sessions');
+      if (o.existed === false) pStore.delete(o.qid);
+      else if (o.prev) pStore.put(o.prev);
+      if (o.sessionId) {
+        const g = sStore.get(o.sessionId);
+        g.onsuccess = () => {
+          if (g.result && !g.result.voided) {
+            g.result.voided = true; g.result.voidedAt = Date.now();
+            sStore.put(g.result);
+          }
+        };
+      }
+      t.oncomplete = () => resolve(true);
+      t.onerror = () => reject(t.error);
+      t.onabort = () => reject(t.error || new Error('事务被中止'));
+    });
+  }
+
   // v28：媒体表（背景音乐 Blob 等），按 kind 索引
   function ensureMediaStore(db) {
     if (!db || !db.objectStoreNames || db.objectStoreNames.contains('media')) return false;
@@ -773,7 +830,7 @@
     const target = Math.max(1, +goal.target || 0);
     if (goal.metric === 'new') {
       const seen = {};
-      (d.sessions || []).forEach(s => { if (s && s.qid) seen[s.qid] = 1; });
+      (d.sessions || []).forEach(s => { if (s && s.qid && !s.voided) seen[s.qid] = 1; });   // v33.2 F05
       return { done: Object.keys(seen).length, target: target };
     }
     if (goal.metric === 'wrong') {
@@ -898,7 +955,7 @@
   function aggTotals(sessions) {
     let count = 0, ms = 0;
     (sessions || []).forEach(it => {
-      if (!it || !it.qid) return;
+      if (!it || !it.qid || it.voided) return;   // v33.2 F05：撤销的作答不计入统计
       count++; ms += Math.max(0, Number(it.ms) || 0);
     });
     return { count: count, ms: ms };
@@ -908,7 +965,7 @@
     const n = days || 14; const now = nowMs || Date.now();
     const byKey = {};
     (sessions || []).forEach(it => {
-      if (!it || !it.qid) return;
+      if (!it || !it.qid || it.voided) return;   // v33.2 F05：撤销的作答不计入统计
       const k = dayKey(it.ts); byKey[k] = (byKey[k] || 0) + 1;
     });
     const out = [];
@@ -921,7 +978,7 @@
   /** 连续打卡天数：从今天往回数；今天没练则从昨天起算（连续不断）；断天即停 */
   function streakDays(sessions, nowMs) {
     const set = {};
-    (sessions || []).forEach(it => { if (it && it.qid) set[dayKey(it.ts)] = 1; });
+    (sessions || []).forEach(it => { if (it && it.qid && !it.voided) set[dayKey(it.ts)] = 1; });   // v33.2 F05
     let t = nowMs || Date.now();
     if (!set[dayKey(t)]) t -= 86400000;
     let n = 0;
@@ -935,7 +992,7 @@
    */
   function streakForgiving(sessions, nowMs) {
     const set = {};
-    (sessions || []).forEach(it => { if (it && it.qid) set[dayKey(it.ts)] = 1; });
+    (sessions || []).forEach(it => { if (it && it.qid && !it.voided) set[dayKey(it.ts)] = 1; });   // v33.2 F05
     let t = nowMs || Date.now();
     if (!set[dayKey(t)]) t -= 86400000;
     let n = 0, frozen = 0, run = 0, credit = 0, pendingFree = false;
@@ -1129,6 +1186,7 @@
     ensureSessionsStore, logSessions, listSessions,
     dayKey, aggTotals, dailyCounts, streakDays, streakForgiving,
     chapterAccuracy, weakChapters, weakPack, outlineMastery,
+    commitStudy, undoStudy,
     dumpAll, restoreAll,
     mergeProgressRecords, pickBankRecord, planMerge, mergeAll,
     saveGoal, listGoals, deleteGoal, goalProgress, planExamGoals, mergeGoals,

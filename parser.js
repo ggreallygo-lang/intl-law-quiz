@@ -39,7 +39,8 @@
   // 整行就是一个括号（答案单独占一行）
   const RE_PAREN_ONLY = /^[（(]([^（()）]*)[）)]\s*$/;
   // 简答的「答：」行（RE_ANSWER 只认「答案」，不认单个「答」）
-  const RE_ANS_LINE = /^\s*答\s*[:：]\s*(.*)$/;
+  // v35：加「回答」——话术体（旅客：…/回答：…）的答案行
+  const RE_ANS_LINE = /^\s*(?:答|回答|答案)\s*[:：]\s*(.*)$/;
   // 名词解释行：短词 + 冒号 + 较长定义
   const RE_TERM_LINE = /^([^：:，。；！？、\s]{2,16})[：:]\s*(\S.{6,})$/;
   // 纯文本章节标记：「1章导论」「2章 国际法上的国家」「第三节 国际法的主体」
@@ -172,7 +173,7 @@
       if (r !== raw) strippedLines++;
       out.push(r);
     }
-    // 删行后可能留下连续空行，压成最多保留 1 个
+    // 删行后可能留下连续空行，压成最多 1 个
     const compact = [];
     let blank = 0;
     for (const l of out) {
@@ -180,7 +181,65 @@
       else blank = 0;
       compact.push(l);
     }
-    return { text: compact.join('\n'), removedLines, strippedLines };
+    // v35 兼容强化①：全角数字/字母归一（OCR 常见「１.」「Ａ.」）——清洗后做，
+    // 全角 ASCII 字母数字在正常中文正文里不会出现，转换无歧义
+    const normalized = compact.map(l => l.replace(/[０-９Ａ-Ｚａ-ｚ]/g, ch =>
+      String.fromCharCode(ch.charCodeAt(0) - 0xFEE0)));
+    // v35 兼容强化②：无编号问答对自动切题（话术/访谈原稿常无编号），
+    // 护栏见 qaPairsToNumbered 注释
+    const qa = qaPairsToNumbered(normalized);
+    return { text: qa.text, removedLines, strippedLines, qaPairs: qa.count };
+  }
+
+  /**
+   * v35：无编号问答对 → 自动编号的简答体（输入为已清洗的行数组）。
+   * 问行 ^\s*(?:旅客|问|提问|Q)\s*[:：]；答行 ^\s*(?:回答\s*\d*|答|答案|A)\s*[:：]。
+   * 标题行（# 开头）透传并结题；答行后的普通行并入答案，问后答前的并入题干。
+   * 护栏：问行 <2 个、或任一问行本身带题号 → 原样返回（带编号的走原路径）。
+   */
+  function qaPairsToNumbered(lines) {
+    const Q = /^\s*(?:旅客|问|提问|Q)\s*[:：]\s*(.*)$/;
+    const A = /^\s*(?:回答\s*\d*|答|答案|A)\s*[:：]\s*(.*)$/;
+    const qIdx = [];
+    for (let i = 0; i < lines.length; i++) {
+      if (Q.test(lines[i])) qIdx.push(i);
+    }
+    if (qIdx.length < 2) return { text: lines.join('\n'), count: 0 };
+    for (const k of qIdx) {
+      if (RE_NUMSTEM_DIGIT.test(lines[k]) || matchDashQno(lines[k]) != null) {
+        return { text: lines.join('\n'), count: 0 };
+      }
+    }
+    const out = [];
+    let n = 0, cur = null;
+    const flush = () => {
+      if (!cur) return;
+      n++;
+      const stem = cur.stem.join(' ').replace(/\s+/g, ' ').trim();
+      const ans = cur.ans.join(' ').replace(/\s+/g, ' ').trim();
+      out.push(n + '. ' + stem);
+      if (ans) out.push('答案：' + ans);
+      out.push('');
+      cur = null;
+    };
+    for (const l of lines) {
+      if (/^#{1,6}\s/.test(l)) { flush(); out.push(l); continue; }
+      const qm = l.match(Q);
+      if (qm) {
+        flush();
+        cur = { stem: [qm[1] || '(无问题内容)'], ans: [] };
+        continue;
+      }
+      if (cur) {
+        const am = l.match(A);
+        if (am && !cur.ans.length) { if (am[1]) cur.ans.push(am[1]); continue; }
+        (cur.ans.length ? cur.ans : cur.stem).push(trim(l));
+        continue;
+      }
+      out.push(l);
+    }
+    flush();
+    return { text: out.join('\n'), count: n };
   }
 
   // ================= v6：真题试卷体支持函数 =================
@@ -360,7 +419,8 @@
     const s = trim(line);
     const m = s.match(RE_TERM_LINE);
     if (!m) return false;
-    if (/^(答|答案|解析|注|例如|注意|说明|提示)/.test(m[1])) return false;
+    // v35：排除词表加「回答」——否则话术体的答案行会被当新术语触发分块
+    if (/^(答|回答|答案|解析|注|例如|注意|说明|提示)/.test(m[1])) return false;
     if (startsWithQno(s)) return false;
     return true;
   }
@@ -524,7 +584,8 @@
 
   // 行内归一化：把同一行里的选项(A. B. C.)和答案/解析标记拆成独立行
   // 只在「以题号开头」或「含答案/解析标记」的行上做，避免误伤名词解释里的 "A." 字样
-  const RE_ANS_MARK = /(?:答案|正确答案|参考答案|标准答案|answer|解析|答案解析|解答|解释)\s*[:：]?/i;
+  // v35：加「回答」——话术体（旅客：…/回答：…）免手工转换直接导入
+  const RE_ANS_MARK = /(?:答案|正确答案|参考答案|标准答案|回答|answer|解析|答案解析|解答|解释)\s*[:：]?/i;
   // v17：标记必须出现在行首或空白/标点之后才算「答案/解析」标记。
   // 否则正文词语会被拦腰截断 —— 实测 201610：「C．强制性司法解释 D．咨询意见」
   // 从「解释」处被切开，D 选项丢失 → 答案键护栏把整题丢弃（第 26 题凭空消失）。
@@ -843,7 +904,7 @@
 
     // 1.5) 简答：块内有「答：/答案：」开头的行（编号题 + 答案行）
     //     v8：规范 v1 约定主观答案行用「答案：」，与单字「答：」一视同仁
-    const ansLineIdx = lines.findIndex(l => RE_ANS_LINE.test(l) || /^\s*答案\s*[:：]/.test(l));
+    const ansLineIdx = lines.findIndex(l => RE_ANS_LINE.test(l));
     if (ansLineIdx > 0 && options.length === 0) {
       // 答案截到「解析：」行之前，否则解析行混入会让判断值护栏失效
       let ansEnd = lines.length;
@@ -851,7 +912,7 @@
         if (/^\s*解析\s*[:：]/.test(trim(lines[i]))) { ansEnd = i; break; }
       }
       const answer = lines.slice(ansLineIdx, ansEnd)
-        .map(l => trim(l.replace(RE_ANS_LINE, '$1')).replace(/^答案\s*[:：]\s*/, ''))
+        .map(l => trim(l.replace(RE_ANS_LINE, '$1')).replace(/^(?:答案|回答|答)\s*[:：]\s*/, ''))
         .filter(Boolean).join(' ').replace(/\s+/g, ' ').trim();
       const stem = lines.slice(0, ansLineIdx).map(trim).filter(Boolean)
         .map((l, i) => (i === 0 ? stripNumber(l) : l))
