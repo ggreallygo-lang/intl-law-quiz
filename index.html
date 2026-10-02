@@ -34,11 +34,35 @@
   <!-- 首页：题库列表 + 导入 -->
   <div class="view" id="view-home">
     <section class="study-hero">
-      <span class="study-kicker">00247 · 国际法 / v38</span>
+      <span class="study-kicker">00247 · 国际法 / v40</span>
       <h2>先搭骨架，再拿分。</h2>
       <p>总框架 → 选择题 → 名词解释 → 大题</p>
       <button class="btn" id="lawCardsBtn" type="button">开始背 14 张小导图 ›</button>
       <span class="muted">一张一主题 · 主干 → 关键词 → 完整解释</span>
+    </section>
+    <section class="review-entry">
+      <h3>骨架之后，分题型背</h3>
+      <p class="muted">十三章各选一个主题 · 学习参考，非官方评分答案</p>
+      <p class="muted">名词卡用于打概念基础，不代表考试一定有单独的名词解释题。选择题之外，必须练简答、论述与案例。</p>
+      <div id="reviewCardsBtns" class="review-buttons">
+        <button class="btn" type="button" data-kind="intro">第1章导论 · 8 张导图＋7 道选择题</button>
+        <button class="btn secondary" type="button" data-kind="term">13 张名词解释</button>
+        <button class="btn secondary" type="button" data-kind="compare">13 张选择题易混卡</button>
+        <button class="btn secondary" type="button" data-kind="essay">13 张大题骨架</button>
+      </div>
+      <details class="map-explanation"><summary>第一天：导论怎么学</summary>
+        <p>先背五块：概念 → 渊源 → 主体 → 两法关系 → 基本原则。打开第一章学习包，背题模式选“概念、渊源、主体、两法关系、原则与案例”回忆8张导图；刷题模式选章节范围中的“选择题练习”，练7道选择题。</p>
+        <p>选择题含本地2025年4月资料中的5题和明确标记的2道自编题；来源答案不是官方核验答案。闭卷写两道骨架：国际法三项特征；国际习惯两要素。最后按“问题—规则—事实—结论”练使用武力案例，不把它当押题。</p>
+        <p>本包依据自考3652015年发布的章节考核要求整理，并补充条约原文；未取得指定教材全文。旧卡、旧题库与已有进度不覆盖。目标：能说出五块、解释选择题错因、写出至少两道分点答案。</p>
+      </details>
+      <details class="map-explanation"><summary>20 天怎么安排</summary>
+        <p>第 1—3 天：背总框架与章节骨架。第 4—10 天：分章选择题＋名词解释。第 11—15 天：闭卷写大题骨架。第 16—18 天：限时练习、补弱章。第 19—20 天：只收口错题与核心概念。</p>
+        <p>每天先回忆旧卡，再练选择题、核对错因。暂按约两小时：15 分钟旧卡、40 分钟选择题、30 分钟概念、25 分钟大题、10 分钟复盘。按你的实际时间调整。</p>
+      </details>
+      <details class="map-explanation"><summary>大题如何写出得分点</summary>
+        <p>简答：回应题意，按序号写定义、条件或原则。论述：先列骨架，再解释各点与相互关系。案例：法律问题 → 适用规则 → 结合案情 → 结论，并检查条件与例外。</p>
+        <p>写你能确定且与问题相关的要点，不编造条约条号或每点分值。具体得分以实际阅卷标准为准。</p>
+      </details>
     </section>
     <!-- v27：考试倒计时 + 目标计划卡（考试日期/目标未设置时显示引导行），由 renderExamCard 填充 -->
     <div id="examCard" class="exam-card hidden"></div>
@@ -395,6 +419,7 @@
   <script src="sfx.js"></script>
   <script src="bgm.js"></script>
   <script src="law-cards.js"></script>
+  <script src="review-cards.js"></script>
   <script src="document-import.js"></script>
   <script src="app.js"></script>
   <script>

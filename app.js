@@ -19,6 +19,7 @@
   };
   // v21：模式名（模式卡片选中态 / 练习范围条 / 开始按钮共用）
   const MODE_LABEL = { memorize: '🃏 背题', practice: '✍️ 刷题', exam: '⏱️ 考试' };
+  const REVIEW_LABEL = { term: '名词解释', essay: '大题骨架', compare: '选择题易混卡', intro: '第1章导论学习包' };
 
   // pool = 当前练习范围内的题目（全库或按章节筛出的子集）
   const S = { bank: null, questions: [], pool: [], outline: [], selectedChapter: null, back: 'home', pendingMode: null, cleaned: null };
@@ -1142,9 +1143,11 @@
       back = `<div class="def">答案：${esc(Scoring.answerText(q))}</div>`;
     }
     if (q.explanation) back += `<div class="exp">解析：${esc(q.explanation)}</div>`;
-    const lawCard = (window.LAW_CARDS || []).find(card => q.type === 'essay' && q.chapterId === card.id && q.stem === card.front && q.answer === card.back && q.explanation === '记忆抓手：' + card.cue);
+    const lawCard = (window.LAW_CARDS || []).concat(window.LAW_REVIEW || []).find(card =>
+      q.chapterId === card.id && q.explanation === '记忆抓手：' + card.cue &&
+      (q.type === 'term' ? q.term === card.front && q.definition === card.back : q.type === 'essay' && q.stem === card.front && q.answer === card.back));
     if (lawCard && lawCard.map) {
-      front = `<div class="tag">导图回忆卡</div><div class="stem">${esc(lawCard.front)}</div>` +
+      front = `<div class="tag">${esc(REVIEW_LABEL[lawCard.kind] || '导图回忆卡')}</div><div class="stem">${esc(lawCard.front)}</div>` +
         `<div class="map-recall"><span>${esc(lawCard.map.center)}</span><p>闭眼想一想：能说出哪 ${lawCard.map.branches.length} 条主干？</p></div>`;
       back = `<div class="law-mindmap" role="group" aria-label="${esc(lawCard.map.center)}思维导图">` +
         `<div class="map-center">${esc(lawCard.map.center)}</div><div class="map-branches">` +
@@ -1153,6 +1156,11 @@
           `<ul>${branch.items.map(item => `<li>${esc(item)}</li>`).join('')}</ul></details>`).join('') + `</div></div>` +
         `<div class="map-cue">记忆线：${esc(lawCard.cue)}</div>` +
         `<details class="map-explanation"><summary>展开完整解释</summary><div class="def">${esc(lawCard.back)}</div></details>`;
+      if (lawCard.sources && lawCard.sources.length) {
+        back += '<details class="map-explanation"><summary>核对依据与出处</summary><p class="muted">自编学习要点，不代替指定教材或官方评分答案。</p>' +
+          lawCard.sources.filter(source => /^https:\/\//.test(source.url)).map(source =>
+            `<p><a href="${esc(source.url)}" target="_blank" rel="noopener noreferrer">${esc(source.title)}</a></p>`).join('') + '</details>';
+      }
     }
     // v14：真 3D 翻转结构 —— 正反面同时渲染、grid 叠放，翻面只是加 .flipped 转 180°
     // （旧版是 innerHTML 硬塞 front+back，没有任何转场，被用户吐槽"假翻转"）
@@ -1884,6 +1892,34 @@
   }
 
   // ---------- 导入 ----------
+  async function openReviewCards(kind, button) {
+    const cards = (window.LAW_REVIEW || []).filter(card => card.kind === kind);
+    if (!cards.length) { toast('复习内容尚未加载，请检查上传文件'); return; }
+    button.disabled = true;
+    try {
+      const metaKey = 'intl-law-review-' + kind + '-v1';
+      const bankId = await DB.getMeta(metaKey);
+      let bank = bankId ? await DB.getBank(bankId) : null;
+      if (!bank) {
+        const chapterCards = kind === 'intro' ? cards.filter((card, i) => cards.findIndex(item => item.chapter === card.chapter) === i) : cards;
+        const outline = chapterCards.map(card => ({ id: card.id, title: card.chapter, level: 2, path: [card.chapter], children: [] }));
+        bank = await DB.saveBank('国际法 · ' + REVIEW_LABEL[kind] + ' · ' + cards.length + ' 张', outline);
+        try {
+          await DB.addQuestions(bank.id, cards.map(card => {
+            const type = card.type || (kind === 'term' ? 'term' : 'essay');
+            return Object.assign({
+              type, explanation: card.explanation || '记忆抓手：' + card.cue,
+              chapter: card.chapter, chapterId: card.id, chapterPath: [card.chapter]
+            }, type === 'term' ? { term: card.front, definition: card.back } :
+              { stem: card.front, answer: card.back, options: card.options || [] });
+          }));
+          await DB.setMeta(metaKey, bank.id);
+        } catch (err) { await DB.deleteBank(bank.id).catch(() => {}); throw err; }
+      }
+      await openBank(bank.id);
+      if (kind !== 'intro') await startMemorize({ plan: 'all' });
+    } finally { button.disabled = false; }
+  }
   async function openLawCards() {
     const button = $('#lawCardsBtn');
     button.disabled = true;
@@ -2237,6 +2273,9 @@
 
   // ---------- 事件绑定 ----------
   function bind() {
+    $('#reviewCardsBtns').querySelectorAll('button').forEach(button => {
+      button.onclick = () => safe(openReviewCards(button.dataset.kind, button), '打开复习卡失败');
+    });
     $('#lawCardsBtn').onclick = () => safe(openLawCards(), '打开框架卡失败');
     $('#backBtn').onclick = () => {
       if (S.back === 'bank') openBank(S.bank.id);
