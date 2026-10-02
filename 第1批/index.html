@@ -1,0 +1,394 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, maximum-scale=1, user-scalable=no" />
+  <!-- 与 .appbar 底色一致，装成 PWA 后顶部不留色差；切深色时由 app.js 同步 -->
+  <meta name="theme-color" content="#fdfbf6" />
+  <title>LEXA · 国际法题库</title>
+  <script>
+    try {
+      document.documentElement.dataset.skin = localStorage.getItem('skin') === 'atlas' ? 'atlas' : 'classic';
+      if (localStorage.getItem('theme') === 'dark') document.documentElement.dataset.theme = 'dark';
+    } catch (_) {}
+  </script>
+  <link rel="manifest" href="manifest.webmanifest" />
+  <link rel="icon" href="icon.svg" type="image/svg+xml" />
+  <link rel="apple-touch-icon" href="icon.svg" />
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <!-- 全局错误横幅：任何未捕获异常都会在这里显示，避免白屏无提示 -->
+  <div class="crashbar hidden" id="crashbar"></div>
+
+  <!-- 顶部栏 -->
+  <div class="appbar">
+    <button class="back hidden" id="backBtn">‹ 返回</button>
+    <h1><span class="brand-mark">LEXA</span><span class="brand-title" id="title">国际法题库</span></h1>
+    <span class="spacer"></span>
+    <button class="iconbtn" id="sfxBtn" title="音效开关">🔊</button>
+    <button class="iconbtn" id="skinBtn" title="切换皮肤">🎨</button>
+    <button class="iconbtn" id="themeBtn" title="切换深色">🌓</button>
+  </div>
+
+  <!-- 首页：题库列表 + 导入 -->
+  <div class="view" id="view-home">
+    <section class="study-hero">
+      <span class="study-kicker">00247 · 国际法 / v36</span>
+      <h2>先搭骨架，再拿分。</h2>
+      <p>总框架 → 选择题 → 名词解释 → 大题</p>
+      <button class="btn" id="lawCardsBtn" type="button">开始背 14 张框架卡 ›</button>
+      <span class="muted">总地图 + 十三章 · 先回忆，再翻面</span>
+    </section>
+    <!-- v27：考试倒计时 + 目标计划卡（考试日期/目标未设置时显示引导行），由 renderExamCard 填充 -->
+    <div id="examCard" class="exam-card hidden"></div>
+    <!-- F2：全站累计统计卡（题数/时长/连续打卡），由 renderHomeStats 填充 -->
+    <div id="homeStats" class="home-stats hidden"></div>
+    <div class="seg" id="importSeg" style="margin-bottom:14px">
+      <button data-v="file" class="on">📂 选择文件</button>
+      <button data-v="paste">📋 粘贴文本</button>
+      <button data-v="slice">✂️ 切片导出</button>
+    </div>
+    <div class="drop" id="dropZone">
+      📥 选择文字、图片或 PDF，也可以拖入文件<br />
+      <span class="muted" style="font-size:13px">文字直接导入 · 图片 / PDF 本机识别，校对后入库</span>
+      <input type="file" id="fileInput" accept=".md,.markdown,.txt,.text,.pdf,.png,.jpg,.jpeg,.webp" multiple class="file-picker" aria-label="选择文字、图片或 PDF 文件" />
+    </div>
+    <div id="sliceArea" class="hidden">
+      <div class="drop" id="sliceDrop">
+        ✂️ 点击选择多个原始 .md / .txt（可拖入文件或文件夹）<br />
+        <span class="muted" style="font-size:13px">原文逐字切片（≤6000 字/片、题块边界切）→ 下载后送 AI 按《题库导入排版规范》修正 → 再导入</span>
+      </div>
+      <input type="file" id="sliceInput" accept=".md,.markdown,.txt,.text" multiple class="hidden" />
+    </div>
+    <div id="pasteArea" class="hidden">
+      <div class="field">
+        <label>题库名称（留空则自动识别文件名/标题）</label>
+        <input type="text" id="pasteName" placeholder="例如：2026 法规考点速记" />
+      </div>
+      <div class="field">
+        <label>把 OCR 软件（图片转 markdown）导出的 .md / 笔记文本粘贴到这里</label>
+        <textarea id="pasteText" rows="9" placeholder="支持规范格式与自由笔记，参见 README…"></textarea>
+      </div>
+      <div class="muted" style="font-size:13px;margin:-6px 0 12px">
+        💡 工作流：PC 用「图片转 markdown」OCR → 导出 .md → 传到手机 → 在这里粘贴 → 自动转题库
+      </div>
+      <button class="btn" id="pasteImport">解析并导入题库 ›</button>
+    </div>
+    <div id="bankList"></div>
+    <!-- v31：跨库刷题入口（多题库混合 / 只做选择题） -->
+    <div class="mix-entry" id="mixEntry">🔀 跨库刷题 · 选几个题库（或全部）· 只做选择题 ›</div>
+    <div class="home-tools">
+      <button class="btn secondary" id="backupBtn">💾 导出备份</button>
+      <button class="btn secondary" id="restoreBtn">📥 恢复备份</button>
+      <input type="file" id="restoreInput" accept=".json,application/json" class="hidden" />
+    </div>
+  </div>
+
+  <!-- 题库详情：三模式 + 目录 -->
+  <div class="view hidden" id="view-bank">
+    <div id="bankSwitch" class="bank-switch"></div>
+    <div id="bankStats" class="bank-summary"></div>
+    <!-- F2：本题库近 14 天每日做题量，由 renderBankChart 填充 -->
+    <div id="bankChart" class="bank-chart hidden"></div>
+
+    <!-- v23：断点续刷——上次没做完的背题/刷题会话，进题库即可一键接着来 -->
+    <div id="resumeBar" class="resume-bar hidden">
+      <div class="rb-info">▶️ 继续上次 <b id="resumeDesc"></b></div>
+      <div class="rb-btns">
+        <button class="btn small" id="resumeGo">继续 ›</button>
+        <button class="btn ghost small" id="resumeDrop">放弃</button>
+      </div>
+    </div>
+
+    <!-- F1：错题本入口（跨会话，数据来自 progress 的累计答错次数） -->
+    <button class="wb-entry" id="wrongEntry" type="button">
+      <span>🔥 错题本</span>
+      <span class="wb-entry-right"><b id="wrongEntryCount">0</b><span class="muted" id="wrongEntryHint"></span></span>
+    </button>
+
+    <!-- F18：弱项专项包（弱章 60% + 错题 40% 组卷，一键进刷题；hint 由 refreshWeakEntry 填充） -->
+    <button class="wb-entry wp-entry" id="weakEntry" type="button">
+      <span>🎯 弱项专项包</span>
+      <span class="wb-entry-right"><b id="weakEntryAcc"></b><span class="muted" id="weakEntryHint">算一算…</span></span>
+    </button>
+
+    <div class="mode-grid">
+      <div class="mode-card" data-mode="memorize">
+        <h3>🃏 背题模式</h3>
+        <p>卡片正反面翻转，按记忆曲线安排复习（忘记 / 模糊 / 记住），适合记忆巩固。<span class="due-hint" id="memDueHint"></span></p>
+      </div>
+      <div class="mode-card" data-mode="practice">
+        <h3>✍️ 刷题模式</h3>
+        <p>逐题作答立即反馈 + 解析，自动收错题，选项乱序，适合练手感。</p>
+      </div>
+      <div class="mode-card" data-mode="exam">
+        <h3>⏱️ 考试模式</h3>
+        <p>限时组卷、交卷出分、按章节正确率分析（仅选择题/判断题计分）。</p>
+      </div>
+    </div>
+
+    <!-- 练习范围选择（点模式卡片后展开） -->
+    <div id="rangeBar" class="range-bar hidden">
+      <div class="range-head"><b id="rangeMode"></b>练习范围 <span class="muted" id="rangeHint"></span></div>
+      <div class="seg" id="rangeSeg">
+        <button data-v="all" class="on">全部题目</button>
+        <button data-v="chapter">按章节选</button>
+      </div>
+      <!-- v30：做题顺序（仅刷题）/ 背书方案（仅背题） -->
+      <div class="seg hidden" id="orderSeg">
+        <button data-v="rand" class="on">🎲 随机顺序</button>
+        <button data-v="seq">📖 按原顺序</button>
+      </div>
+      <div class="seg hidden" id="planSeg">
+        <button data-v="due" class="on">⏰ 到期复习（今日该背）</button>
+        <button data-v="all">📚 全书过卡（系统方案）</button>
+      </div>
+      <div id="chapterPicker" class="chapter-picker hidden"></div>
+      <button class="btn" id="rangeStart">开始 ›</button>
+      <button class="btn ghost" id="rangeCancel">取消</button>
+    </div>
+
+    <!-- 目录树 -->
+    <div class="section-head">
+      <span>目录</span>
+      <span class="muted" id="outlineHint"></span>
+      <button class="btn ghost small" id="outlineFold">全部折叠</button>
+    </div>
+    <div id="outlineTree" class="outline"></div>
+
+    <!-- 题目列表 + 搜索 -->
+    <div class="section-head">
+      <span>题目</span>
+      <span class="muted" id="qlistHint"></span>
+    </div>
+    <input type="search" id="qSearch" class="search" placeholder="搜索题干 / 选项 / 答案 / 解析…" />
+    <div id="questionList" class="qlist"></div>
+
+    <div style="margin-top:18px" id="bankTools"></div>
+  </div>
+
+  <!-- 学习容器（背题/刷题/考试 共用） -->
+  <div class="view hidden" id="view-study"></div>
+
+  <!-- F1：错题本（内容全由 app.js 渲染） -->
+  <div class="view hidden" id="view-wrong"></div>
+
+  <!-- v20：恢复备份方式选择（合并 / 覆盖 / 取消） -->
+  <div class="modal-mask hidden" id="restoreModal">
+    <div class="modal-card">
+      <h3>📥 恢复备份</h3>
+      <p class="muted" id="rmSummary" style="font-size:14px;margin:4px 0 14px"></p>
+      <button class="btn" id="rmMerge">🤝 合并恢复（推荐）</button>
+      <div class="muted" style="font-size:12px;margin:4px 0 12px">保留本机数据；学习进度按较新者合并，同一题库自动去重</div>
+      <button class="btn secondary" id="rmOverwrite">♻️ 覆盖恢复</button>
+      <div class="muted" style="font-size:12px;margin:4px 0 12px">清空本机全部题库与进度，完全换成备份内容（不可撤销）</div>
+      <button class="btn ghost" id="rmCancel">取消</button>
+    </div>
+  </div>
+
+  <div class="modal-mask hidden" id="skinModal" role="dialog" aria-modal="true" aria-labelledby="skinTitle">
+    <div class="modal-card">
+      <h3 id="skinTitle">🎨 选择皮肤</h3>
+      <div class="muted">只改变外观，不影响题库和学习记录。浅色／深色仍用顶部 🌓 切换。</div>
+      <div class="skin-options" id="skinOptions">
+        <button class="skin-choice" data-v="classic" aria-pressed="false">经典原版<span>保留原来的界面</span></button>
+        <button class="skin-choice" data-v="atlas" aria-pressed="false">环球纸境<span>地球插画 · 圆润卡片</span></button>
+      </div>
+      <button class="btn ghost" id="skinClose">完成</button>
+    </div>
+  </div>
+  <!-- v23：声音与震动设置（音效包换包即试听） -->
+  <div class="modal-mask hidden" id="sfxModal">
+    <div class="modal-card">
+      <h3>🔔 声音与震动</h3>
+      <div class="field"><label>音效</label>
+        <div class="seg" id="sfxOnSeg">
+          <button data-v="1">开</button><button data-v="0">关</button>
+        </div>
+      </div>
+      <!-- v29：音量三档——手机外放听合成音偏轻，响度交给用户 -->
+      <div class="field"><label>音效音量</label>
+        <div class="seg" id="volSeg">
+          <button data-v="0.6">轻</button><button data-v="1">标准</button><button data-v="1.6">响</button>
+        </div>
+      </div>
+      <div class="field"><label>音效包（切换即试听）</label>
+        <div class="seg" id="packSeg">
+          <button data-v="crisp">清脆</button><button data-v="soft">柔和</button><button data-v="wood">木质</button><button data-v="retro">怀旧</button><button data-v="study">静心</button>
+        </div>
+      </div>
+      <div class="sound-preview" id="soundPreview">
+        <button class="btn secondary" data-sound="flip">翻卡试听</button><button class="btn secondary" data-sound="right">答对试听</button><button class="btn secondary" data-sound="wrong">答错试听</button>
+      </div>
+      <div class="field hidden" id="vibeField"><label>震动（独立于声音开关）</label>
+        <div class="seg" id="vibeSeg">
+          <button data-v="1">开</button><button data-v="0">关</button>
+        </div>
+        <div class="seg" id="vibeLevelSeg" style="margin-top:8px">
+          <button data-v="light">轻触</button><button data-v="standard">标准</button>
+        </div>
+        <button class="btn secondary" id="vibePreview" style="margin-top:8px">测试震动</button>
+      </div>
+      <div class="muted" id="vibeUnsupported" style="font-size:12px;margin-bottom:12px">当前浏览器不支持网页震动。iPhone Safari 通常不可用；音效可正常使用。</div>
+      <!-- v28：背景音乐（内置合成曲 + 本地音乐导入，曲目可扩展） -->
+      <div class="field"><label>背景音乐（做题时轻声循环）</label>
+        <div class="seg" id="bgmOnSeg">
+          <button data-v="1">开</button><button data-v="0">关</button>
+        </div>
+        <select id="bgmTrack"></select>
+        <label style="margin-top:10px">背景音乐音量</label>
+        <div class="seg" id="bgmVolSeg">
+          <button data-v="0.3">轻声</button><button data-v="0.6">适中</button><button data-v="1">标准</button>
+        </div>
+        <div class="eq-row" style="margin-top:8px">
+          <button class="btn secondary" id="bgmAdd">＋ 添加本地音乐</button>
+          <button class="btn secondary hidden" id="bgmDel">删</button>
+        </div>
+        <input type="file" id="bgmFile" accept="audio/*" class="hidden">
+        <div class="muted" style="font-size:12px;margin-top:4px">支持 mp3 / m4a / ogg / wav，存在本机不联网。切到后台暂停，返回后点击恢复；部分 iPhone 浏览器的本地音乐音量需用系统音量调节。</div>
+      </div>
+      <!-- v34.3：导出题库清洗规则（给外部 AI 的导入规范） -->
+      <button class="btn secondary" id="exportRulesBtn">📤 导出清洗规则（AI 导入规范）</button>
+      <button class="btn ghost" id="sfxModalClose">关闭</button>
+    </div>
+  </div>
+
+  <!-- v25：题目编辑弹层（内容由 app.js 按题型生成） -->
+  <div class="modal-mask hidden" id="editModal">
+    <div class="modal-card">
+      <h3>✏️ 编辑题目</h3>
+      <div id="editBody"></div>
+      <button class="btn" id="editSave">保存</button>
+      <button class="btn ghost" id="editCancel">取消</button>
+    </div>
+  </div>
+
+  <!-- v24：每日目标设置 -->
+  <div class="modal-mask hidden" id="goalModal">
+    <div class="modal-card">
+      <h3>🎯 每日目标</h3>
+      <div class="seg" id="goalSeg" style="margin:12px 0">
+        <button data-v="20">20 题</button><button data-v="50">50 题</button>
+        <button data-v="100">100 题</button><button data-v="150">150 题</button>
+      </div>
+      <!-- v32 A1：背题每日限额（Anki 式保护——防积压雪崩，不累积到明天） -->
+      <div class="field"><label>每日新卡上限</label>
+        <div class="seg" id="limNewSeg">
+          <button data-v="10">10</button><button data-v="20">20</button>
+          <button data-v="30">30</button><button data-v="50">50</button><button data-v="0">不限</button>
+        </div>
+      </div>
+      <div class="field"><label>每日复习上限</label>
+        <div class="seg" id="limRevSeg">
+          <button data-v="50">50</button><button data-v="100">100</button>
+          <button data-v="200">200</button><button data-v="0">不限</button>
+        </div>
+      </div>
+      <button class="btn ghost" id="goalModalClose">关闭</button>
+    </div>
+  </div>
+
+  <!-- v27：考试计划（考试日期 + 多目标 + 一键三阶段生成），内容由 app.js 渲染 -->
+  <div class="modal-mask hidden" id="planModal">
+    <div class="modal-card plan-card">
+      <h3>⏳ 考试计划</h3>
+      <div class="field"><label>考试名称</label>
+        <input type="text" id="examName" placeholder="如：00247 国际法" maxlength="40">
+      </div>
+      <div class="field"><label>考试日期</label>
+        <input type="date" id="examDate">
+      </div>
+      <button class="btn secondary" id="examSave" style="width:100%">保存考试信息</button>
+      <div class="plan-list" id="goalList"></div>
+      <div class="field"><label>添加目标</label>
+        <input type="text" id="goalTitle" placeholder="目标，如：名词解释全部背完" maxlength="60">
+        <div class="plan-row">
+          <input type="date" id="goalDeadline">
+          <select id="goalMetric">
+            <option value="new">累计做题数</option>
+            <option value="wrong">错题清零</option>
+            <option value="mock">整卷模拟次数</option>
+            <option value="manual">手动勾选</option>
+          </select>
+        </div>
+        <input type="number" id="goalTarget" placeholder="数量（错题清零/手动可留空）" min="1" inputmode="numeric">
+        <button class="btn secondary" id="goalAdd" style="width:100%;margin-top:8px">＋ 添加目标</button>
+      </div>
+      <button class="btn" id="planGen" style="width:100%">✨ 生成建议计划（三阶段）</button>
+      <button class="btn ghost" id="planModalClose">关闭</button>
+    </div>
+  </div>
+
+  <!-- v31：跨库刷题弹层（题库多选 + 题型筛选 + 顺序） -->
+  <div class="modal-mask hidden" id="mixModal">
+    <div class="modal-card">
+      <h3>🔀 跨库刷题</h3>
+      <div class="field"><label>选择题库（可多选）</label>
+        <div id="mixBanks" class="chapter-picker" style="max-height:200px;margin-top:4px"></div>
+        <button class="btn secondary" id="mixAll" style="width:100%;margin-top:8px">全选 / 全不选</button>
+      </div>
+      <div class="field"><label>题型</label>
+        <div class="seg" id="mixTypeSeg">
+          <button data-v="all" class="on">全部题型</button><button data-v="choice">✅ 选择题</button>
+          <button data-v="judge">判断题</button><button data-v="essay">主观题</button>
+        </div>
+      </div>
+      <div class="field"><label>顺序</label>
+        <div class="seg" id="mixOrderSeg">
+          <button data-v="rand" class="on">🎲 随机</button><button data-v="seq">📖 按原顺序</button>
+        </div>
+      </div>
+      <div class="muted" id="mixHint" style="font-size:13px;margin-top:8px"></div>
+      <button class="btn" id="mixStart" style="width:100%;margin-top:10px">开始刷题 ›</button>
+      <button class="btn ghost" id="mixModalClose">关闭</button>
+    </div>
+  </div>
+
+  <!-- v24：PWA 更新提示条（新版装好后出现，点刷新即用上） -->
+  <div class="update-bar hidden" id="updateBar">
+    <span>🎉 新版本已就绪</span>
+    <button id="updateReload">刷新</button>
+    <button id="updateClose" title="关闭">✕</button>
+  </div>
+
+  <div class="toast" id="toast"></div>
+
+  <div class="modal-mask hidden" id="docModal" role="dialog" aria-modal="true" aria-labelledby="docTitle">
+    <div class="modal-card doc-modal">
+      <div class="doc-heading"><h3 id="docTitle">图片 / PDF · 识别与校对</h3><button class="btn ghost small" id="docClose" type="button">取消 / 关闭</button></div>
+      <p class="muted">原件不上传服务器。不自动生成答案；无答案的选择题不会入库，请在文字中补充经核实的答案。</p>
+      <div class="field"><label for="docName">题库名称</label><input id="docName" type="text" maxlength="100"></div>
+      <div class="doc-actions">
+        <label>从 <input id="docFrom" type="number" min="1" value="1" aria-label="开始页"> 页</label>
+        <label>到 <input id="docTo" type="number" min="1" value="3" aria-label="结束页"> 页</label>
+        <label><input id="docForceOcr" type="checkbox"> 强制图片识别（文字乱序时）</label>
+        <button class="btn small" id="docExtract" type="button">开始识别</button>
+      </div>
+      <p id="docStatus" class="doc-status" role="status" aria-live="polite"></p>
+      <div class="doc-columns">
+        <section><div class="doc-heading"><b>原件</b><div><button class="btn ghost small" id="docPrev" type="button">上一页</button><span id="docPageLabel"></span><button class="btn ghost small" id="docNext" type="button">下一页</button></div></div><div id="docSource" class="doc-source"></div></section>
+        <section><label for="docText"><b>校对文字</b> · 可直接修改题号、选项与答案</label><textarea id="docText" rows="18" spellcheck="false" placeholder="1. 题干&#10;A. 选项&#10;B. 选项&#10;答案：A"></textarea><button class="btn secondary" id="docPreview" type="button">预览解析后的题目</button></section>
+      </div>
+      <p id="docCount" class="muted"></p><div id="docQuestions" class="doc-questions"></div>
+      <button class="btn" id="docConfirm" type="button" disabled>确认校对并导入</button>
+    </div>
+  </div>
+
+  <script src="db.js"></script>
+  <script src="parser.js"></script>
+  <script src="slicer.js"></script>
+  <script src="scheduler.js"></script>
+  <script src="scoring.js"></script>
+  <script src="sfx.js"></script>
+  <script src="bgm.js"></script>
+  <script src="law-cards.js"></script>
+  <script src="document-import.js"></script>
+  <script src="app.js"></script>
+  <script>
+    if ('serviceWorker' in navigator) {
+      window.addEventListener('load', () => navigator.serviceWorker.register('sw.js').catch(() => {}));
+    }
+  </script>
+</body>
+</html>
