@@ -503,6 +503,11 @@
   }
 
   function findExplanation(lines) {
+    // 明确的独立解析字段优先，避免正文“关注”等词被旧容错规则抢先识别。
+    for (const line of lines) {
+      const m = line.match(/^\s*(?:答案解析|解析|解答|【解析】|注)\s*[:：]\s*(.*)$/);
+      if (m) return trim(m[1]);
+    }
     for (const line of lines) {
       const m = line.match(RE_EXPL);
       if (m) return trim(m[2]);
@@ -611,6 +616,9 @@
     return out;
   }
   function normalizeLine(line) {
+    // 已分行的问答不再拆正文中的“答案”“解释”；保留显式行内解析的旧处理。
+    if (/^\s*(?:答案解析|解析|解答|【解析】)\s*[:：]/.test(line) ||
+        (/^\s*答\s*[:：]/.test(line) && !/(?:答案解析|解析|【解析】)\s*[:：]/.test(line))) return [line];
     // v6：先按「答案/解析」标记切段，再对每段尝试「行内多选项」拆分。
     // 顺序很关键 —— 反过来写会把「A.北京 B.上海 C.广州 答案B」里的
     // 「答案B」粘在最后一个选项上（实测回归测试 A6 就是这么挂的）。
