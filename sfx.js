@@ -72,6 +72,22 @@
                  retroKnock(0); retroKnock(150);
                  retroBlip(988, 420); retroBlip(1319, 515);
                }
+             } },
+    study: { label: '静心', vol: 0.65,
+             synth: {
+               flip: function () { noise(0.07, 0.045, 650, 1100); },
+               right: function () {
+                 tone(523, 0.18, { type: 'sine', gain: 0.045 });
+                 setTimeout(function () { tone(659, 0.22, { type: 'sine', gain: 0.04 }); }, 90);
+               },
+               wrong: function () { tone(262, 0.2, { type: 'sine', gain: 0.045, slideTo: 220 }); },
+               neutral: function () { tone(392, 0.1, { type: 'sine', gain: 0.03 }); },
+               warn: function () { tone(440, 0.18, { type: 'sine', gain: 0.04 }); },
+               done: function () {
+                 tone(392, 0.22, { type: 'sine', gain: 0.04 });
+                 setTimeout(function () { tone(523, 0.24, { type: 'sine', gain: 0.04 }); }, 120);
+                 setTimeout(function () { tone(659, 0.3, { type: 'sine', gain: 0.035 }); }, 240);
+               }
              } }
   };
   function packOf(id) { return PACKS[id] || PACKS.crisp; }
@@ -80,6 +96,7 @@
   var _pack = readKey('sfx-pack', 'crisp');
   if (!PACKS[_pack]) _pack = 'crisp';
   var _vibe = readKey('vibe-off', '0') !== '1';
+  var _vibeLevel = readKey('vibe-level', 'light') === 'standard' ? 'standard' : 'light';
   var VOL_LEVELS = { '0.6': 0.6, '1': 1, '1.6': 1.6 };
   var _volMul = VOL_LEVELS[readKey('sfx-vol', '1')] || 1;
 
@@ -169,9 +186,14 @@
 
   // 震动（安卓/部分浏览器；iOS Safari 无此 API，调了也只是无效，不会报错）
   function vibe(pattern) {
-    if (!_vibe || !_enabled) return;
+    if (!_vibe) return;
     try {
-      if (typeof navigator !== 'undefined' && navigator.vibrate) navigator.vibrate(pattern);
+      if (typeof navigator !== 'undefined' && navigator.vibrate) {
+        var pulses = Array.isArray(pattern) ? pattern : [pattern];
+        navigator.vibrate(pulses.map(function (ms, i) {
+          return i % 2 || _vibeLevel === 'standard' ? ms : Math.max(5, Math.round(ms * 0.5));
+        }));
+      }
     } catch (e) {}
   }
 
@@ -182,7 +204,7 @@
       writeKey('sfx-off', on ? '0' : '1');
       return _enabled;
     },
-    /** 当前音效包 id（crisp/soft/wood/retro） */
+    /** 当前音效包 id（crisp/soft/wood/retro/study） */
     getPack: function () { return _pack; },
     /** 换包（未知 id 回落 crisp）；返回生效的包 id */
     setPack: function (id) {
@@ -208,8 +230,18 @@
     setVibe: function (on) {
       _vibe = !!on;
       writeKey('vibe-off', on ? '0' : '1');
+      if (!_vibe) {
+        try { if (typeof navigator !== 'undefined' && navigator.vibrate) navigator.vibrate(0); } catch (e) {}
+      }
       return _vibe;
     },
+    getVibeLevel: function () { return _vibeLevel; },
+    setVibeLevel: function (level) {
+      _vibeLevel = level === 'standard' ? 'standard' : 'light';
+      writeKey('vibe-level', _vibeLevel);
+      return _vibeLevel;
+    },
+    previewVibe: function () { vibe([20, 40, 20]); },
     /** 首次手势时调用，把 AudioContext 建好（iOS 策略） */
     warm: function () { ac(); },
     flip: function () { if (playSynth('flip')) return; noise(0.14, 0.10); },   // 翻卡「刷刷」/ 怀旧「刷刷刷」

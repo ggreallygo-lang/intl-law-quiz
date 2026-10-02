@@ -8,15 +8,16 @@
  *   3. 离线回退 HTML 只用于导航请求；JS/CSS 等子资源离线时绝不能回退成 index.html
  *      （否则控制台一片 MIME 错误、页面假死）。
  */
-const CACHE = 'card-quiz-v34';   // v34.1：scheduler 纯模块抽出；忘记当日重学（隔≥3张回来）
+const CACHE = 'card-quiz-v36.1';   // 可切换皮肤、专注音乐与独立震动
                                  // 注意：本 SW 对同源资源是 cache-first，改了 styles.css/app.js
                                  // 必须同步改这里，否则老用户永远拿到旧样式。
 const PREFIX = 'card-quiz-';
 const CORE = [
   './', './index.html', './styles.css',
-  './app.js', './db.js', './parser.js', './scoring.js', './slicer.js', './scheduler.js', './sfx.js', './bgm.js'
+  './app.js', './db.js', './parser.js', './scoring.js', './slicer.js', './scheduler.js', './sfx.js', './bgm.js',
+  './law-cards.js', './document-import.js'
 ];
-const DECOR = ['./manifest.webmanifest', './icon.svg', './bg-light.webp', './bg-dark.webp'];
+const DECOR = ['./manifest.webmanifest', './icon.svg', './bg-light.webp', './bg-dark.webp', './study-hero.png'];
 const SHELL = CORE.concat(DECOR);
 
 self.addEventListener('install', (e) => {
@@ -61,6 +62,21 @@ self.addEventListener('fetch', (e) => {
     return;
   }
   if (!inShell) {
+    // 识别组件按需缓存；不在安装时一次下载全部语言模型。
+    const vendorRoot = new URL('./vendor/', self.location.href).pathname;
+    if (url.pathname.startsWith(vendorRoot)) {
+      e.respondWith(caches.open(CACHE).then(async cache => {
+        const hit = await cache.match(e.request);
+        if (hit) return hit;
+        const res = await fetch(e.request);
+        if (res.ok && res.type === 'basic') {
+          const write = cache.put(e.request, res.clone()).catch(err => console.warn('[sw] 识别组件缓存失败', err));
+          e.waitUntil(write);
+        }
+        return res;
+      }));
+      return;
+    }
     // 白名单外：直接走网络，不读缓存也不写缓存（防缓存无限增长/意外内容入库）
     return;
   }

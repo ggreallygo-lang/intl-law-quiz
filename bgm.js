@@ -76,12 +76,34 @@
         [28, 50, 0.9], [29, 57, 0.9], [30, 45, 0.9], [31, 50, 0.9]
       ],
       bars: 8                                   // 32 拍一循环
+    },
+    focus: {
+      label: '书房微光（内置）', bpm: 66, wave: 'sine', bassWave: 'sine', attack: 0.16, gain: 0.11,
+      lead: [[0, 64, 1.8], [2, 67, 1.8], [4, 71, 2.8], [7, 67, 0.8],
+             [8, 62, 1.8], [10, 66, 1.8], [12, 69, 2.8], [15, 66, 0.8],
+             [16, 60, 1.8], [18, 64, 1.8], [20, 67, 2.8], [23, 64, 0.8],
+             [24, 62, 1.8], [26, 67, 1.8], [28, 64, 3.5]],
+      bass: [[0, 48, 3.5], [4, 55, 3.5], [8, 50, 3.5], [12, 57, 3.5],
+             [16, 45, 3.5], [20, 52, 3.5], [24, 43, 3.5], [28, 55, 3.5]],
+      bars: 8
+    },
+    rain: {
+      label: '窗边雨点（内置）', bpm: 74, wave: 'sine', bassWave: 'sine', attack: 0.08, gain: 0.09,
+      lead: [[0, 74, 0.8], [1.5, 69, 0.8], [3, 67, 1.5], [5, 69, 0.8], [6.5, 72, 1],
+             [8, 76, 0.8], [9.5, 72, 0.8], [11, 69, 1.5], [13, 67, 0.8], [14.5, 69, 1],
+             [16, 74, 0.8], [17.5, 72, 0.8], [19, 67, 1.5], [21, 64, 0.8], [22.5, 67, 1],
+             [24, 69, 0.8], [25.5, 67, 0.8], [27, 64, 1.5], [29, 62, 0.8], [30.5, 67, 1]],
+      bass: [[0, 50, 6.8], [8, 48, 6.8], [16, 43, 6.8], [24, 45, 6.8]],
+      bars: 8
     }
   };
 
   var _enabled = readKey('bgm-off', '0') !== '1';
   var _track = readKey('bgm-track', 'cheery');
   var _playing = false;
+  var VOL_LEVELS = { '0.3': 0.3, '0.6': 0.6, '1': 1 };
+  var _volMul = VOL_LEVELS[readKey('bgm-vol', '0.6')] || 0.6;
+  var _playTicket = 0, _pending = false;
   var _ctx = null, _master = null, _timer = null, _nextBeat = 0, _startedAt = 0;
   var _audioEl = null, _objUrl = null;
 
@@ -97,15 +119,16 @@
   function midiHz(m) { return 440 * Math.pow(2, (m - 69) / 12); }
 
   // 合成音符（方波领奏 / 三角低音），音量经 master 压低
-  function schedNote(t, midi, dur, isBass) {
+  function schedNote(t, midi, dur, isBass, track) {
+    if (!midi) return;
     var c = _ctx;
     var osc = c.createOscillator();
     var g = c.createGain();
-    osc.type = isBass ? 'triangle' : 'square';
+    osc.type = isBass ? (track.bassWave || 'triangle') : (track.wave || 'square');
     osc.frequency.value = midiHz(midi);
     var vol = isBass ? 0.5 : 0.32;
     g.gain.setValueAtTime(0.0001, t);
-    g.gain.exponentialRampToValueAtTime(vol, t + 0.02);
+    g.gain.exponentialRampToValueAtTime(vol, t + (track.attack || 0.02));
     g.gain.exponentialRampToValueAtTime(0.0001, t + Math.max(0.06, dur * 0.92));
     osc.connect(g); g.connect(_master);
     osc.start(t); osc.stop(t + dur + 0.03);
@@ -116,7 +139,7 @@
     var c = ac();
     if (!c) return false;
     _master = _ctx.createGain();
-    _master.gain.value = 0.16;
+    _master.gain.value = (track.gain || 0.16) * _volMul;
     _master.connect(_ctx.destination);
     _startedAt = _ctx.currentTime + 0.1;
     _nextBeat = 0;
@@ -130,12 +153,12 @@
           var pos = _nextBeat % totalBeats;
           for (var i = 0; i < track.lead.length; i++) {
             if (Math.abs(track.lead[i][0] - pos) < 1e-9) {
-              schedNote(_startedAt + _nextBeat * spb, track.lead[i][1], track.lead[i][2] * spb, false);
+              schedNote(_startedAt + _nextBeat * spb, track.lead[i][1], track.lead[i][2] * spb, false, track);
             }
           }
           for (var j = 0; j < track.bass.length; j++) {
             if (Math.abs(track.bass[j][0] - pos) < 1e-9) {
-              schedNote(_startedAt + _nextBeat * spb, track.bass[j][1], track.bass[j][2] * spb, true);
+              schedNote(_startedAt + _nextBeat * spb, track.bass[j][1], track.bass[j][2] * spb, true, track);
             }
           }
           _nextBeat += 0.5;
@@ -157,7 +180,7 @@
     _objUrl = URL.createObjectURL(track.blob);
     _audioEl = new Audio(_objUrl);
     _audioEl.loop = true;
-    _audioEl.volume = 0.25;                     // iOS 会忽略，其余平台压低
+    _audioEl.volume = 0.25 * _volMul;           // iOS 可能忽略元素音量，其余平台压低
     return _audioEl.play().then(function () { return true; }).catch(function () { return false; });
   }
 
@@ -167,6 +190,8 @@
   }
 
   function stopAll() {
+    // 使等待 IndexedDB / Audio.play 的旧请求失效，避免停播或换曲后重新响起。
+    _playTicket++; _pending = false;
     stopSynth(); stopBlob();
     _playing = false;
   }
@@ -181,9 +206,21 @@
     },
     getTrack: function () { return _track; },
     setTrack: function (id) {
-      _track = String(id || 'cheery');
+      var next = String(id || 'cheery');
+      if (next !== _track) stopAll();
+      _track = next;
       writeKey('bgm-track', _track);
       return _track;
+    },
+    getVol: function () { return String(_volMul); },
+    setVol: function (v) {
+      _volMul = VOL_LEVELS[String(v)] || 0.6;
+      writeKey('bgm-vol', String(_volMul));
+      try {
+        if (_master) _master.gain.value = ((SYNTH_TRACKS[_track] || {}).gain || 0.16) * _volMul;
+        if (_audioEl) _audioEl.volume = 0.25 * _volMul;
+      } catch (e) {}
+      return String(_volMul);
     },
     isPlaying: function () { return _playing; },
     /** 曲目清单：内置 + 自定义（自定义来自 IndexedDB media 表） */
@@ -203,20 +240,29 @@
     },
     /** 起播当前曲目（须在用户手势里调用）；返回是否成功 */
     start: function () {
-      if (!_enabled || _playing) return _playing;
+      if (!_enabled || _playing || _pending) return _playing || _pending;
       try {
         if (SYNTH_TRACKS[_track]) {
           _playing = startSynth(SYNTH_TRACKS[_track]);
           return _playing;
         }
+        var ticket = ++_playTicket;
+        _pending = true;
         var p = (typeof DB !== 'undefined' && DB.getMedia) ? DB.getMedia(_track) : Promise.resolve(null);
         p.then(function (m) {
-          if (!m || !m.blob) return;
-          if (!_enabled || _playing) return;
-          startBlob(m).then(function (ok) { _playing = ok; }).catch(function () {});
-        }).catch(function () {});
+          if (ticket !== _playTicket || !_enabled) return;
+          if (!m || !m.blob) { _pending = false; return; }
+          return Promise.resolve(startBlob(m)).then(function (ok) {
+            if (ticket !== _playTicket) return;
+            _pending = false;
+            _playing = ok;
+            if (!ok) stopBlob();
+          });
+        }).catch(function () {
+          if (ticket === _playTicket) { _pending = false; stopBlob(); }
+        });
         return true;                            // 异步起播，先报成功
-      } catch (e) { return false; }
+      } catch (e) { stopAll(); return false; }
     },
     stop: function () { stopAll(); },
     /** 页面已有手势预热钩子调用：开着但没播就补播（iOS 策略） */

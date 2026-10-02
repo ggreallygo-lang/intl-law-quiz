@@ -9,7 +9,10 @@
   document.addEventListener('pointerdown', function () {
     if (window.SFX) SFX.warm();
     if (window.BGM) BGM.resume();   // v28：背景音乐开着时借首次手势起播（iOS 策略）
-  }, { once: true, passive: true });
+  }, { passive: true });
+  document.addEventListener('visibilitychange', function () {
+    if (document.hidden && window.BGM) BGM.stop();
+  });
   const TYPE_LABEL = {
     single: '单选题', multiple: '多选题', judge: '判断题',
     term: '名词解释', fill: '填空题', essay: '简答题'
@@ -1806,6 +1809,28 @@
   }
 
   // ---------- 导入 ----------
+  async function openLawCards() {
+    const button = $('#lawCardsBtn');
+    button.disabled = true;
+    try {
+      const bankId = await DB.getMeta('intl-law-outline-v1');
+      let bank = bankId ? await DB.getBank(bankId) : null;
+      if (!bank) {
+        const outline = LAW_CARDS.map(card => ({ id: card.id, title: card.chapter, level: 2, path: [card.chapter], children: [] }));
+        bank = await DB.saveBank('国际法 · 14 张框架卡', outline);
+        try {
+          await DB.addQuestions(bank.id, LAW_CARDS.map(card => ({
+            type: 'essay', stem: card.front, answer: card.back,
+            explanation: '记忆抓手：' + card.cue,
+            chapter: card.chapter, chapterId: card.id, chapterPath: [card.chapter]
+          })));
+          await DB.setMeta('intl-law-outline-v1', bank.id);
+        } catch (err) { await DB.deleteBank(bank.id).catch(() => {}); throw err; }
+      }
+      await openBank(bank.id);
+      await startMemorize({ plan: 'all' });
+    } finally { button.disabled = false; }
+  }
   // 水印清洗统计：导入前重置，saveParsed 累加，提示语里回显
   function resetCleaned() { S.cleaned = { removedLines: 0, strippedLines: 0 }; }
   function accCleaned(c) {
@@ -1852,6 +1877,17 @@
     // fi.value='' 会把它当场清空，第一个 await 挂起期间列表就没了，
     // 异步回来继续迭代直接结束（实测：多选 15 个只导入第 1 个，且无报错）
     const list = Array.from(files || []);
+    const documents = list.filter(f => /\.(pdf|png|jpe?g|webp)$/i.test(f.name));
+    if (documents.length) {
+      if (documents.length !== list.length) { toast('请将图片 / PDF 与文字文件分开选择'); return; }
+      await DocImport.open(documents, async (text, name) => {
+        resetCleaned();
+        const n = await saveParsed(text, name);
+        if (n) { toast('已导入 ' + n + ' 题' + cleanedHint()); await renderHome(); }
+        return n;
+      });
+      return;
+    }
     let imported = 0, total = 0;
     const errBefore = errShown;
     resetCleaned();
@@ -1981,9 +2017,9 @@
   function importDropped(dt, into) {
     // into：'import' 走题库导入，'slice' 走切片导出
     safe(filesFromDataTransfer(dt).then(list => {
-      const ok = list.filter(f => /\.(md|markdown|txt|text)$/i.test(f.name));
+      const ok = list.filter(f => (into === 'slice' ? /\.(md|markdown|txt|text)$/i : /\.(md|markdown|txt|text|pdf|png|jpe?g|webp)$/i).test(f.name));
       if (ok.length) return into === 'slice' ? handleSliceFiles(ok) : handleFiles(ok);
-      toast('没找到 .md / .txt 文件');
+      toast(into === 'slice' ? '没找到 .md / .txt 文件' : '请选择文字、PDF、PNG、JPG 或 WebP 文件');
     }), '读取拖入文件失败');
   }
 
@@ -2126,6 +2162,7 @@
 
   // ---------- 事件绑定 ----------
   function bind() {
+    $('#lawCardsBtn').onclick = () => safe(openLawCards(), '打开框架卡失败');
     $('#backBtn').onclick = () => {
       if (S.back === 'bank') openBank(S.bank.id);
       else {                                   // v27 修复：题库页「‹ 首页」真的切回首页（原来只重渲列表没切视图）
@@ -2135,7 +2172,7 @@
       }
     };
     const fi = $('#fileInput');
-    $('#dropZone').onclick = () => fi.click();
+    $('#dropZone').onclick = (e) => { if (e.target !== fi) fi.click(); };
     // v18：先取快照再清 input —— value='' 会当场清空 FileList，
     // 异步导入循环回来就拿不到后面的文件（多选只剩第 1 个的根因）
     fi.onchange = () => {
@@ -2243,10 +2280,15 @@
       setSeg($('#packSeg'), SFX.getPack());
       const vibeOk = SFX.vibeSupported();
       $('#vibeField').classList.toggle('hidden', !vibeOk);
-      if (vibeOk) setSeg($('#vibeSeg'), SFX.getVibe() ? '1' : '0');
+      $('#vibeUnsupported').classList.toggle('hidden', vibeOk);
+      if (vibeOk) {
+        setSeg($('#vibeSeg'), SFX.getVibe() ? '1' : '0');
+        setSeg($('#vibeLevelSeg'), SFX.getVibeLevel());
+      }
       // v28：背景音乐段——开关 + 曲目下拉（内置 + 本地导入）
       if (window.BGM) {
         setSeg($('#bgmOnSeg'), BGM.enabled() ? '1' : '0');
+        setSeg($('#bgmVolSeg'), BGM.getVol());
         BGM.tracks().then(list => {
           const sel = $('#bgmTrack');
           sel.innerHTML = list.map(t => `<option value="${esc(t.id)}"${t.id === BGM.getTrack() ? ' selected' : ''}>${esc(t.label)}</option>`).join('');
@@ -2275,7 +2317,25 @@
     $('#vibeSeg').querySelectorAll('button').forEach(b => b.onclick = () => {
       SFX.setVibe(b.dataset.v === '1');
       $('#vibeSeg').querySelectorAll('button').forEach(x => x.classList.toggle('on', x === b));
-      if (SFX.getVibe()) SFX.done();        // 震动开关试一下收尾震感
+      if (SFX.getVibe()) SFX.previewVibe();
+    });
+    $('#vibeLevelSeg').querySelectorAll('button').forEach(b => b.onclick = () => {
+      SFX.setVibeLevel(b.dataset.v);
+      $('#vibeLevelSeg').querySelectorAll('button').forEach(x => x.classList.toggle('on', x === b));
+      SFX.previewVibe();
+    });
+    $('#vibePreview').onclick = () => {
+      if (!SFX.getVibe()) { toast('先开启震动'); return; }
+      SFX.previewVibe();
+      toast('已发送震动测试；静音／勿扰模式可能拦截');
+    };
+    $('#soundPreview').querySelectorAll('button').forEach(b => b.onclick = () => {
+      if (!SFX.enabled()) { toast('先开启音效'); return; }
+      SFX[b.dataset.sound]();
+    });
+    $('#bgmVolSeg').querySelectorAll('button').forEach(b => b.onclick = () => {
+      BGM.setVol(b.dataset.v);
+      $('#bgmVolSeg').querySelectorAll('button').forEach(x => x.classList.toggle('on', x === b));
     });
     // v28：背景音乐 —— 开关 / 选曲 / 导入本地音乐 / 删除
     $('#bgmOnSeg').querySelectorAll('button').forEach(b => b.onclick = () => {
@@ -2459,6 +2519,21 @@
       localStorage.setItem('theme', cur);
       syncThemeColor();
     };
+    const syncSkin = () => {
+      const skin = document.documentElement.dataset.skin === 'atlas' ? 'atlas' : 'classic';
+      $('#skinOptions').querySelectorAll('button').forEach(b => {
+        b.classList.toggle('on', b.dataset.v === skin);
+        b.setAttribute('aria-pressed', String(b.dataset.v === skin));
+      });
+    };
+    $('#skinBtn').onclick = () => { syncSkin(); $('#skinModal').classList.remove('hidden'); };
+    $('#skinOptions').querySelectorAll('button').forEach(b => b.onclick = () => {
+      document.documentElement.dataset.skin = b.dataset.v;
+      try { localStorage.setItem('skin', b.dataset.v); } catch (_) { toast('当前浏览器无法保存外观偏好'); }
+      syncSkin();
+    });
+    $('#skinClose').onclick = () => $('#skinModal').classList.add('hidden');
+    $('#skinModal').onclick = e => { if (e.target === $('#skinModal')) $('#skinModal').classList.add('hidden'); };
   }
 
   // ---------- 启动 ----------

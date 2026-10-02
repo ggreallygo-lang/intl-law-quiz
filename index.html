@@ -6,6 +6,12 @@
   <!-- 与 .appbar 底色一致，装成 PWA 后顶部不留色差；切深色时由 app.js 同步 -->
   <meta name="theme-color" content="#fdfbf6" />
   <title>LEXA · 国际法题库</title>
+  <script>
+    try {
+      document.documentElement.dataset.skin = localStorage.getItem('skin') === 'atlas' ? 'atlas' : 'classic';
+      if (localStorage.getItem('theme') === 'dark') document.documentElement.dataset.theme = 'dark';
+    } catch (_) {}
+  </script>
   <link rel="manifest" href="manifest.webmanifest" />
   <link rel="icon" href="icon.svg" type="image/svg+xml" />
   <link rel="apple-touch-icon" href="icon.svg" />
@@ -21,11 +27,19 @@
     <h1><span class="brand-mark">LEXA</span><span class="brand-title" id="title">国际法题库</span></h1>
     <span class="spacer"></span>
     <button class="iconbtn" id="sfxBtn" title="音效开关">🔊</button>
+    <button class="iconbtn" id="skinBtn" title="切换皮肤">🎨</button>
     <button class="iconbtn" id="themeBtn" title="切换深色">🌓</button>
   </div>
 
   <!-- 首页：题库列表 + 导入 -->
   <div class="view" id="view-home">
+    <section class="study-hero">
+      <span class="study-kicker">00247 · 国际法 / v36</span>
+      <h2>先搭骨架，再拿分。</h2>
+      <p>总框架 → 选择题 → 名词解释 → 大题</p>
+      <button class="btn" id="lawCardsBtn" type="button">开始背 14 张框架卡 ›</button>
+      <span class="muted">总地图 + 十三章 · 先回忆，再翻面</span>
+    </section>
     <!-- v27：考试倒计时 + 目标计划卡（考试日期/目标未设置时显示引导行），由 renderExamCard 填充 -->
     <div id="examCard" class="exam-card hidden"></div>
     <!-- F2：全站累计统计卡（题数/时长/连续打卡），由 renderHomeStats 填充 -->
@@ -36,10 +50,10 @@
       <button data-v="slice">✂️ 切片导出</button>
     </div>
     <div class="drop" id="dropZone">
-      📥 点击选择（可一次多选）或把 .md / .txt 文件 / 整个文件夹拖到这里<br />
-      <span class="muted" style="font-size:13px">自动解析成选择题 / 判断题 / 名词解释</span>
+      📥 选择文字、图片或 PDF，也可以拖入文件<br />
+      <span class="muted" style="font-size:13px">文字直接导入 · 图片 / PDF 本机识别，校对后入库</span>
+      <input type="file" id="fileInput" accept=".md,.markdown,.txt,.text,.pdf,.png,.jpg,.jpeg,.webp" multiple class="file-picker" aria-label="选择文字、图片或 PDF 文件" />
     </div>
-    <input type="file" id="fileInput" accept=".md,.markdown,.txt,.text" multiple class="hidden" />
     <div id="sliceArea" class="hidden">
       <div class="drop" id="sliceDrop">
         ✂️ 点击选择多个原始 .md / .txt（可拖入文件或文件夹）<br />
@@ -173,6 +187,17 @@
     </div>
   </div>
 
+  <div class="modal-mask hidden" id="skinModal" role="dialog" aria-modal="true" aria-labelledby="skinTitle">
+    <div class="modal-card">
+      <h3 id="skinTitle">🎨 选择皮肤</h3>
+      <div class="muted">只改变外观，不影响题库和学习记录。浅色／深色仍用顶部 🌓 切换。</div>
+      <div class="skin-options" id="skinOptions">
+        <button class="skin-choice" data-v="classic" aria-pressed="false">经典原版<span>保留原来的界面</span></button>
+        <button class="skin-choice" data-v="atlas" aria-pressed="false">环球纸境<span>地球插画 · 圆润卡片</span></button>
+      </div>
+      <button class="btn ghost" id="skinClose">完成</button>
+    </div>
+  </div>
   <!-- v23：声音与震动设置（音效包换包即试听） -->
   <div class="modal-mask hidden" id="sfxModal">
     <div class="modal-card">
@@ -183,33 +208,45 @@
         </div>
       </div>
       <!-- v29：音量三档——手机外放听合成音偏轻，响度交给用户 -->
-      <div class="field"><label>音量</label>
+      <div class="field"><label>音效音量</label>
         <div class="seg" id="volSeg">
           <button data-v="0.6">轻</button><button data-v="1">标准</button><button data-v="1.6">响</button>
         </div>
       </div>
       <div class="field"><label>音效包（切换即试听）</label>
         <div class="seg" id="packSeg">
-          <button data-v="crisp">清脆</button><button data-v="soft">柔和</button><button data-v="wood">木质</button><button data-v="retro">怀旧</button>
+          <button data-v="crisp">清脆</button><button data-v="soft">柔和</button><button data-v="wood">木质</button><button data-v="retro">怀旧</button><button data-v="study">静心</button>
         </div>
       </div>
-      <div class="field hidden" id="vibeField"><label>震动（做完一题 / 答错时轻震）</label>
+      <div class="sound-preview" id="soundPreview">
+        <button class="btn secondary" data-sound="flip">翻卡试听</button><button class="btn secondary" data-sound="right">答对试听</button><button class="btn secondary" data-sound="wrong">答错试听</button>
+      </div>
+      <div class="field hidden" id="vibeField"><label>震动（独立于声音开关）</label>
         <div class="seg" id="vibeSeg">
           <button data-v="1">开</button><button data-v="0">关</button>
         </div>
+        <div class="seg" id="vibeLevelSeg" style="margin-top:8px">
+          <button data-v="light">轻触</button><button data-v="standard">标准</button>
+        </div>
+        <button class="btn secondary" id="vibePreview" style="margin-top:8px">测试震动</button>
       </div>
+      <div class="muted" id="vibeUnsupported" style="font-size:12px;margin-bottom:12px">当前浏览器不支持网页震动。iPhone Safari 通常不可用；音效可正常使用。</div>
       <!-- v28：背景音乐（内置合成曲 + 本地音乐导入，曲目可扩展） -->
       <div class="field"><label>背景音乐（做题时轻声循环）</label>
         <div class="seg" id="bgmOnSeg">
           <button data-v="1">开</button><button data-v="0">关</button>
         </div>
         <select id="bgmTrack"></select>
+        <label style="margin-top:10px">背景音乐音量</label>
+        <div class="seg" id="bgmVolSeg">
+          <button data-v="0.3">轻声</button><button data-v="0.6">适中</button><button data-v="1">标准</button>
+        </div>
         <div class="eq-row" style="margin-top:8px">
           <button class="btn secondary" id="bgmAdd">＋ 添加本地音乐</button>
           <button class="btn secondary hidden" id="bgmDel">删</button>
         </div>
         <input type="file" id="bgmFile" accept="audio/*" class="hidden">
-        <div class="muted" style="font-size:12px;margin-top:4px">支持 mp3 / m4a / ogg / wav，存在本机不联网</div>
+        <div class="muted" style="font-size:12px;margin-top:4px">支持 mp3 / m4a / ogg / wav，存在本机不联网。切到后台暂停，返回后点击恢复；部分 iPhone 浏览器的本地音乐音量需用系统音量调节。</div>
       </div>
       <!-- v34.3：导出题库清洗规则（给外部 AI 的导入规范） -->
       <button class="btn secondary" id="exportRulesBtn">📤 导出清洗规则（AI 导入规范）</button>
@@ -317,6 +354,27 @@
 
   <div class="toast" id="toast"></div>
 
+  <div class="modal-mask hidden" id="docModal" role="dialog" aria-modal="true" aria-labelledby="docTitle">
+    <div class="modal-card doc-modal">
+      <div class="doc-heading"><h3 id="docTitle">图片 / PDF · 识别与校对</h3><button class="btn ghost small" id="docClose" type="button">取消 / 关闭</button></div>
+      <p class="muted">原件不上传服务器。不自动生成答案；无答案的选择题不会入库，请在文字中补充经核实的答案。</p>
+      <div class="field"><label for="docName">题库名称</label><input id="docName" type="text" maxlength="100"></div>
+      <div class="doc-actions">
+        <label>从 <input id="docFrom" type="number" min="1" value="1" aria-label="开始页"> 页</label>
+        <label>到 <input id="docTo" type="number" min="1" value="3" aria-label="结束页"> 页</label>
+        <label><input id="docForceOcr" type="checkbox"> 强制图片识别（文字乱序时）</label>
+        <button class="btn small" id="docExtract" type="button">开始识别</button>
+      </div>
+      <p id="docStatus" class="doc-status" role="status" aria-live="polite"></p>
+      <div class="doc-columns">
+        <section><div class="doc-heading"><b>原件</b><div><button class="btn ghost small" id="docPrev" type="button">上一页</button><span id="docPageLabel"></span><button class="btn ghost small" id="docNext" type="button">下一页</button></div></div><div id="docSource" class="doc-source"></div></section>
+        <section><label for="docText"><b>校对文字</b> · 可直接修改题号、选项与答案</label><textarea id="docText" rows="18" spellcheck="false" placeholder="1. 题干&#10;A. 选项&#10;B. 选项&#10;答案：A"></textarea><button class="btn secondary" id="docPreview" type="button">预览解析后的题目</button></section>
+      </div>
+      <p id="docCount" class="muted"></p><div id="docQuestions" class="doc-questions"></div>
+      <button class="btn" id="docConfirm" type="button" disabled>确认校对并导入</button>
+    </div>
+  </div>
+
   <script src="db.js"></script>
   <script src="parser.js"></script>
   <script src="slicer.js"></script>
@@ -324,6 +382,8 @@
   <script src="scoring.js"></script>
   <script src="sfx.js"></script>
   <script src="bgm.js"></script>
+  <script src="law-cards.js"></script>
+  <script src="document-import.js"></script>
   <script src="app.js"></script>
   <script>
     if ('serviceWorker' in navigator) {
