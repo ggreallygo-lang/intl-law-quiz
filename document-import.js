@@ -144,6 +144,7 @@
     if ($('docText').value.trim() && !confirm('重新识别会替换当前校对文字，继续吗？')) return;
     state.busy = true;
     $('docExtract').disabled = true; $('docPreview').disabled = true; $('docConfirm').disabled = true;
+    $('docSaveImages').disabled = true;
     $('docText').disabled = true;
     const chunks = [];
     try {
@@ -189,20 +190,23 @@
       state.busy = false;
       if (!state.closed) {
         $('docExtract').disabled = false; $('docPreview').disabled = false; $('docText').disabled = false;
+        $('docSaveImages').disabled = !!state.saveFailed;
       }
       if (state.worker) { await state.worker.terminate().catch(() => {}); state.worker = null; }
     }
   }
 
-  async function open(files, onImport) {
+  async function open(files, onImport, onSaveImages) {
     await close();
     const pdfFiles = files.filter(file => /\.pdf$/i.test(file.name));
     if (pdfFiles.length && (pdfFiles.length !== 1 || files.length !== 1)) throw new Error('一次请选择一个 PDF，或一组按顺序排列的图片');
     if (!pdfFiles.length && files.length > 12) throw new Error('一次最多选择 12 张图片');
     if (files.some(file => file.size > 30 * 1024 * 1024)) throw new Error('单个文件不能超过 30 MB，请分成较小文件');
-    const state = { files, urls: [], totalPages: files.length, pageIndex: 0, previewTicket: 0, closed: false, busy: false, onImport };
+    const state = { files, urls: [], totalPages: files.length, pageIndex: 0, previewTicket: 0, closed: false, busy: false, onImport, onSaveImages };
     active = state;
     $('docModal').classList.remove('hidden');
+    $('docSaveImages').classList.toggle('hidden', !!pdfFiles.length || !onSaveImages);
+    $('docSaveImages').disabled = false;
     $('docName').value = files[0].name.replace(/\.[^.]+$/, '') + (files.length > 1 ? '等' + files.length + '张' : '');
     $('docStatus').textContent = '正在打开原件…';
     $('docCount').textContent = '识别文字尚未入库。';
@@ -232,6 +236,24 @@
   }
 
   $('docClose').onclick = () => close();
+  $('docSaveImages').onclick = async () => {
+    const state = active;
+    if (!state || state.busy || state.saveFailed || state.pdf || !state.onSaveImages) return;
+    state.busy = true;
+    $('docSaveImages').disabled = true; $('docClose').disabled = true;
+    $('docExtract').disabled = true; $('docPreview').disabled = true; $('docConfirm').disabled = true;
+    $('docStatus').textContent = '正在保存原图，不进行文字识别…';
+    try { await state.onSaveImages(state.files); await close(); }
+    catch (err) {
+      state.saveFailed = true;
+      $('docStatus').textContent = '保存未完成：' + err.message + ' 请关闭此窗口后，只重新选择未保存的图片。';
+    }
+    finally {
+      state.busy = false;
+      $('docSaveImages').disabled = !!state.saveFailed; $('docClose').disabled = false;
+      $('docExtract').disabled = false; $('docPreview').disabled = false;
+    }
+  };
   $('docExtract').onclick = extract;
   $('docPreview').onclick = preview;
   $('docText').oninput = () => { $('docConfirm').disabled = true; $('docCount').textContent = '文字已修改，请重新预览题目。'; };
@@ -245,6 +267,7 @@
     state.busy = true;
     $('docConfirm').disabled = true; $('docClose').disabled = true; $('docText').disabled = true;
     $('docExtract').disabled = true; $('docPreview').disabled = true;
+    $('docSaveImages').disabled = true;
     try {
       const n = await state.onImport(state.importText, $('docName').value.trim() || '文档识别题库');
       if (!n) throw new Error('没有写入题目，请检查识别结果或存储空间');
@@ -254,6 +277,7 @@
       state.busy = false;
       $('docClose').disabled = false; $('docText').disabled = false;
       $('docExtract').disabled = false; $('docPreview').disabled = false;
+      $('docSaveImages').disabled = !!state.saveFailed;
     }
   };
   window.DocImport = { open };

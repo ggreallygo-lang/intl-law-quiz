@@ -34,11 +34,11 @@
   <!-- 首页：题库列表 + 导入 -->
   <div class="view" id="view-home">
     <section class="study-hero">
-      <span class="study-kicker">00247 · 国际法 / v36</span>
+      <span class="study-kicker">00247 · 国际法 / v38</span>
       <h2>先搭骨架，再拿分。</h2>
       <p>总框架 → 选择题 → 名词解释 → 大题</p>
-      <button class="btn" id="lawCardsBtn" type="button">开始背 14 张框架卡 ›</button>
-      <span class="muted">总地图 + 十三章 · 先回忆，再翻面</span>
+      <button class="btn" id="lawCardsBtn" type="button">开始背 14 张小导图 ›</button>
+      <span class="muted">一张一主题 · 主干 → 关键词 → 完整解释</span>
     </section>
     <!-- v27：考试倒计时 + 目标计划卡（考试日期/目标未设置时显示引导行），由 renderExamCard 填充 -->
     <div id="examCard" class="exam-card hidden"></div>
@@ -51,7 +51,7 @@
     </div>
     <div class="drop" id="dropZone">
       📥 选择文字、图片或 PDF，也可以拖入文件<br />
-      <span class="muted" style="font-size:13px">文字直接导入 · 图片 / PDF 本机识别，校对后入库</span>
+      <span class="muted" style="font-size:13px">图片可直接保存原图查看 · 也可本机识别、校对后转题目</span>
       <input type="file" id="fileInput" accept=".md,.markdown,.txt,.text,.pdf,.png,.jpg,.jpeg,.webp" multiple class="file-picker" aria-label="选择文字、图片或 PDF 文件" />
     </div>
     <div id="sliceArea" class="hidden">
@@ -75,6 +75,7 @@
       </div>
       <button class="btn" id="pasteImport">解析并导入题库 ›</button>
     </div>
+    <section id="imageLibrary" class="image-library"></section>
     <div id="bankList"></div>
     <!-- v31：跨库刷题入口（多题库混合 / 只做选择题） -->
     <div class="mix-entry" id="mixEntry">🔀 跨库刷题 · 选几个题库（或全部）· 只做选择题 ›</div>
@@ -173,6 +174,16 @@
 
   <!-- F1：错题本（内容全由 app.js 渲染） -->
   <div class="view hidden" id="view-wrong"></div>
+  <div class="view hidden" id="view-images">
+    <h2 id="imageName"></h2>
+    <div class="image-actions">
+      <label>缩放 <select id="imageZoom" aria-label="原图缩放"><option value="100">适合宽度</option><option value="150">150%</option><option value="200">200%</option><option value="300">300%</option></select></label>
+      <a class="btn secondary small" id="imageDownload" download>下载原图</a>
+      <button class="btn ghost small" id="imageDelete" type="button">删除此图</button>
+    </div>
+    <p class="muted" id="imageStatus" role="status"></p>
+    <div class="image-scroll"><img id="savedImage" alt="" /></div>
+  </div>
 
   <!-- v20：恢复备份方式选择（合并 / 覆盖 / 取消） -->
   <div class="modal-mask hidden" id="restoreModal">
@@ -364,6 +375,7 @@
         <label>到 <input id="docTo" type="number" min="1" value="3" aria-label="结束页"> 页</label>
         <label><input id="docForceOcr" type="checkbox"> 强制图片识别（文字乱序时）</label>
         <button class="btn small" id="docExtract" type="button">开始识别</button>
+        <button class="btn secondary small hidden" id="docSaveImages" type="button">保存原图（不识别）</button>
       </div>
       <p id="docStatus" class="doc-status" role="status" aria-live="polite"></p>
       <div class="doc-columns">

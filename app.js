@@ -98,10 +98,16 @@
   // 记录当前视图：离开「学习页」时要清理定时器，
   // 否则考试倒计时会在已经切走的页面上触发交卷，把结果渲染到错误的视图里
   let curView = null;
+  let imageUrl = null;
   function showView(name) {
     if (curView === 'study' && name !== 'study') cleanupStudy();
+    if (curView === 'images' && imageUrl) {
+      $('#savedImage').removeAttribute('src');
+      $('#imageDownload').removeAttribute('href');
+      URL.revokeObjectURL(imageUrl); imageUrl = null;
+    }
     curView = name;
-    ['home', 'bank', 'study', 'wrong'].forEach(v => $('#view-' + v).classList.toggle('hidden', v !== name));
+    ['home', 'bank', 'study', 'wrong', 'images'].forEach(v => $('#view-' + v).classList.toggle('hidden', v !== name));
   }
   function cleanupStudy() {
     stopTimer(exam); stopTimer(prac); stopTimer(mem);   // v21：三个模式的计时器统一停
@@ -124,8 +130,65 @@
   }
 
   // ---------- 题库列表（首页） ----------
+  async function saveImages(files) {
+    let saved = 0;
+    for (const file of files) {
+      try {
+        await DB.saveMedia({ id: 'study-image-' + crypto.randomUUID(), kind: 'study-image', name: file.name, blob: file, createdAt: Date.now() });
+        saved++;
+      } catch (err) {
+        await renderImageLibrary();
+        throw new Error('已保存 ' + saved + ' 张；未保存的图片请重新选择。' + err.message);
+      }
+    }
+    await renderImageLibrary();
+    toast('已保存 ' + saved + ' 张原图，可在首页打开');
+    return saved;
+  }
+  async function renderImageLibrary() {
+    const images = await DB.listMedia('study-image');
+    const target = $('#imageLibrary');
+    target.replaceChildren();
+    if (!images.length) return;
+    const heading = document.createElement('h3');
+    heading.textContent = '图片资料 · ' + images.length + ' 张';
+    const note = document.createElement('p');
+    note.className = 'muted';
+    note.textContent = '原图仅保存在当前浏览器，题库 JSON 备份不包含原图；请保留源文件或下载备份。';
+    target.append(heading, note);
+    images.sort((a, b) => b.createdAt - a.createdAt).forEach(record => {
+      const button = document.createElement('button');
+      button.className = 'image-entry'; button.type = 'button';
+      button.textContent = '▧ ' + record.name + ' ›';
+      button.onclick = () => safe(openImage(record.id), '打开原图失败');
+      target.appendChild(button);
+    });
+  }
+  async function openImage(id) {
+    const record = await DB.getMedia(id);
+    if (!record || !(record.blob instanceof Blob)) { toast('原图不存在，请重新导入'); return; }
+    showView('images');
+    setBack('home', '‹ 首页'); $('#backBtn').classList.remove('hidden');
+    $('#title').textContent = '图片资料'; $('#imageName').textContent = record.name;
+    imageUrl = URL.createObjectURL(record.blob);
+    const img = $('#savedImage');
+    $('#imageStatus').textContent = '正在打开原图…';
+    img.onload = () => { $('#imageStatus').textContent = img.naturalWidth + ' × ' + img.naturalHeight + ' · 放大后可左右、上下滑动查看'; };
+    img.onerror = () => { $('#imageStatus').textContent = '无法显示此图片，请下载原图检查文件是否损坏。'; };
+    img.alt = record.name; img.style.width = '100%'; img.src = imageUrl;
+    $('#imageZoom').value = '100';
+    $('#imageZoom').onchange = () => { img.style.width = $('#imageZoom').value + '%'; };
+    const link = $('#imageDownload'); link.href = imageUrl; link.download = record.name;
+    $('#imageDelete').onclick = () => safe((async () => {
+      if (!confirm('删除这张本机原图？请先确认已保存源文件。')) return;
+      await DB.deleteMedia(id);
+      showView('home'); setBack('home'); $('#title').textContent = '国际法题库';
+      await renderHome(); toast('已删除本机原图，源文件不受影响');
+    })(), '删除原图失败');
+  }
   async function renderHome() {
     const banks = await DB.listBanks();
+    safe(renderImageLibrary(), '加载原图失败');
     safe(renderHomeStats(), '加载统计失败');   // 统计卡并行加载，不阻塞题库列表
     safe(renderExamCard(), '加载考试计划失败'); // v27：倒计时/目标卡并行加载
     const list = $('#bankList');
@@ -1079,6 +1142,18 @@
       back = `<div class="def">答案：${esc(Scoring.answerText(q))}</div>`;
     }
     if (q.explanation) back += `<div class="exp">解析：${esc(q.explanation)}</div>`;
+    const lawCard = (window.LAW_CARDS || []).find(card => q.type === 'essay' && q.chapterId === card.id && q.stem === card.front && q.answer === card.back && q.explanation === '记忆抓手：' + card.cue);
+    if (lawCard && lawCard.map) {
+      front = `<div class="tag">导图回忆卡</div><div class="stem">${esc(lawCard.front)}</div>` +
+        `<div class="map-recall"><span>${esc(lawCard.map.center)}</span><p>闭眼想一想：能说出哪 ${lawCard.map.branches.length} 条主干？</p></div>`;
+      back = `<div class="law-mindmap" role="group" aria-label="${esc(lawCard.map.center)}思维导图">` +
+        `<div class="map-center">${esc(lawCard.map.center)}</div><div class="map-branches">` +
+        lawCard.map.branches.map((branch, i) => `<details class="map-branch map-color-${i % 3}" open>` +
+          `<summary><span class="map-index">${pad2(i + 1)}</span>${esc(branch.title)}</summary>` +
+          `<ul>${branch.items.map(item => `<li>${esc(item)}</li>`).join('')}</ul></details>`).join('') + `</div></div>` +
+        `<div class="map-cue">记忆线：${esc(lawCard.cue)}</div>` +
+        `<details class="map-explanation"><summary>展开完整解释</summary><div class="def">${esc(lawCard.back)}</div></details>`;
+    }
     // v14：真 3D 翻转结构 —— 正反面同时渲染、grid 叠放，翻面只是加 .flipped 转 180°
     // （旧版是 innerHTML 硬塞 front+back，没有任何转场，被用户吐槽"假翻转"）
     view.innerHTML =
@@ -1086,7 +1161,7 @@
       `<span class="mtimer" id="mtTimer">⏱ ${fmtElapsed(Date.now() - (mem.startAt || Date.now()))}</span>` +
       `<div class="progress-bar"><span style="width:${(mem.i / total) * 100}%"></span></div></div>` +
       `<div class="study-body slide-in">` +
-      `<div class="flip3d" id="card">` +
+      `<div class="flip3d${lawCard ? ' law-map-card' : ''}" id="card">` +
         `<div class="flip3d-inner">` +
           `<div class="flip-face flip-front">${chapterLine}${front}</div>` +
           `<div class="flip-face flip-back">${chapterLine}<div class="tag">答案</div>${stemMini}${back}</div>` +
@@ -1885,7 +1960,7 @@
         const n = await saveParsed(text, name);
         if (n) { toast('已导入 ' + n + ' 题' + cleanedHint()); await renderHome(); }
         return n;
-      });
+      }, saveImages);
       return;
     }
     let imported = 0, total = 0;
