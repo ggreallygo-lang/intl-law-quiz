@@ -247,7 +247,7 @@
   /** 题型区标题 -> 题型。只认「一、单项选择题」这类强特征，宁可漏判。 */
   function classifySection(title) {
     const t = title || '';
-    if (/多项|不定项/.test(t)) return 'multiple';
+    if (/多项|多选|不定项/.test(t)) return 'multiple';
     if (/单项/.test(t)) return 'single';
     if (/判断|对错|是非/.test(t)) return 'judge';
     if (/简答|问答/.test(t)) return 'essay';
@@ -263,7 +263,7 @@
     const m = String(line || '').match(RE_TYPE_TAG);
     if (!m) return null;
     const t = m[1];
-    if (/多项/.test(t)) return 'multiple';
+    if (/多项|多选/.test(t)) return 'multiple';
     if (/单项|单选/.test(t)) return 'single';
     if (/判断/.test(t)) return 'judge';
     if (/名词/.test(t)) return 'term';

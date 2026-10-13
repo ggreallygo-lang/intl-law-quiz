@@ -1370,9 +1370,10 @@
         <div class="option" data-v="1"><span class="key">✓</span> 对</div>
         <div class="option" data-v="0"><span class="key">✗</span> 错</div>`;
     } else {
-      const opts = shuffle(q.options);
+      const opts = q.options.slice().sort((a, b) => a.key.localeCompare(b.key));
       body = `<div class="q-stem"><span class="qnum">${TYPE_LABEL[q.type]} ${prac.i + 1}/${total}</span>${esc(q.stem)}</div>` +
         opts.map(o => `<div class="option" data-k="${o.key}"><span class="key">${o.key}</span> ${esc(o.text)}</div>`).join('');
+      if (q.type === 'multiple') body += `<p class="muted">可选择多个选项，再点提交答案；再次点击可取消选择。</p><button class="btn" id="multiSubmit">提交答案</button>`;
     }
     // v14：题干+选项包一层 .slide-in，切题时从右侧滑入，不再是"啪"地整屏替换
     // v28：导航行常驻（上一题 / 跳过）；results[i] 有作答记录时进「回看」模式
@@ -1434,6 +1435,10 @@
     opts.forEach(op => {
       op.onclick = () => {
         if (op.classList.contains('locked')) return;
+        if (q.type === 'multiple') {
+          op.classList.toggle('chosen');
+          return;
+        }
         opts.forEach(o => o.classList.add('locked'));
         const picked = (q.type === 'judge') ? op.dataset.v : op.dataset.k;
         // 统一走 scoring.js：answer 可能是数组/字符串/undefined，直接 .includes 会静默误判
@@ -1454,10 +1459,30 @@
       };
     });
 
+    if (q.type === 'multiple') {
+      $('#multiSubmit').onclick = () => {
+        const btn = $('#multiSubmit');
+        if (btn.disabled) return;
+        const picked = Array.from(opts).filter(o => o.classList.contains('chosen')).map(o => o.dataset.k);
+        if (!picked.length) { toast('请先选择答案'); return; }
+        btn.disabled = true;
+        const right = Scoring.isRight(q, picked);
+        const keys = Scoring.answerKeys(q);
+        opts.forEach(o => {
+          o.classList.add('locked');
+          if (keys.includes(o.dataset.k)) o.classList.add('correct');
+          if (!right && o.classList.contains('chosen')) o.classList.add('wrong', 'shake');
+          if (right && o.classList.contains('correct')) o.classList.add('pop');
+        });
+        finishPractice(q, right, picked);
+      };
+    }
+
     // v28：回看模式 —— 这一题已做过（results[i] 是作答记录）：锁选项、复放反馈，不重复计分
     if (rec && rec !== 'skip') {
       const rOpts = view.querySelectorAll('.option');
       rOpts.forEach(o => o.classList.add('locked'));
+      if ($('#multiSubmit')) $('#multiSubmit').disabled = true;
       if (q.type === 'judge') {
         const want = q.answer ? '1' : '0';
         rOpts.forEach(o => {
@@ -1613,7 +1638,7 @@
     });
     const view = $('#view-study'); showView('study');
     if (!gradable.length) { toast('本题库没有可计分的客观题'); openBank(S.bank.id); return; }
-    const settings = { n: 'all', min: 0, shuffleOpt: true };
+    const settings = { n: 'all', min: 0, shuffleOpt: false };
     view.innerHTML =
       `<h3 style="margin-top:0">⏱️ 考试设置</h3>
       <div class="field"><label>题量</label><div class="seg" id="segN">
@@ -1623,7 +1648,7 @@
       <div class="field"><label>时长（分钟，0 = 不限时）</label>
         <input type="number" id="examMin" min="0" step="1" value="0" /></div>
       <div class="field"><label>选项乱序</label><div class="seg" id="segOpt">
-        <button data-v="1" class="on">开</button><button data-v="0">关</button></div></div>
+        <button data-v="1">开</button><button data-v="0" class="on">关</button></div></div>
       <button class="btn" id="startExam">开始考试 ›</button>`;
     $('#segN').querySelectorAll('button').forEach(b => b.onclick = () => {
       $('#segN').querySelectorAll('button').forEach(x => x.classList.remove('on')); b.classList.add('on'); settings.n = b.dataset.v;
@@ -1687,7 +1712,7 @@
       body = `<div class="q-stem"><span class="qnum">${timerHtml}填空题 ${exam.i + 1}/${total}</span>${esc(q.stem)}</div>
         <input type="text" id="fillInput" class="fill-input" value="${esc(saved)}" placeholder="输入答案（回车跳下一题）" autocomplete="off" />`;
     } else {
-      const opts = exam.shuffleOpt ? shuffle(q.options) : q.options;
+      const opts = exam.shuffleOpt ? shuffle(q.options) : q.options.slice().sort((a, b) => a.key.localeCompare(b.key));
       body = `<div class="q-stem"><span class="qnum">${timerHtml}${TYPE_LABEL[q.type]} ${exam.i + 1}/${total}</span>${esc(q.stem)}</div>` +
         opts.map(o => `<div class="option" data-k="${o.key}"><span class="key">${o.key}</span> ${esc(o.text)}</div>`).join('');
     }
@@ -1707,6 +1732,7 @@
         if (q.type === 'multiple') renderExamMulti(q);
       };
     });
+    if (q.type === 'multiple') renderExamMulti(q);
     // 填空题：边打字边存，切题/交卷都不丢
     if (q.type === 'fill') {
       const inp = $('#fillInput');
