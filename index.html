@@ -26,6 +26,14 @@
 
   <!-- 首页：题库列表 + 导入 -->
   <div class="view" id="view-home">
+    <!-- v37.3：首页恢复条——退出后重开 App 第一眼就能看到 -->
+    <div id="homeResumeBar" class="resume-bar hidden" style="margin-bottom:12px">
+      <div class="rb-info">▶️ 继续上次 <b id="homeResumeDesc"></b></div>
+      <div class="rb-btns">
+        <button class="btn small" id="homeResumeGo">继续 ›</button>
+        <button class="btn ghost small" id="homeResumeDrop">放弃</button>
+      </div>
+    </div>
     <!-- v27：考试倒计时 + 目标计划卡（考试日期/目标未设置时显示引导行），由 renderExamCard 填充 -->
     <div id="examCard" class="exam-card hidden"></div>
     <!-- F2：全站累计统计卡（题数/时长/连续打卡），由 renderHomeStats 填充 -->

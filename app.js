@@ -125,6 +125,7 @@
     const banks = await DB.listBanks();
     safe(renderHomeStats(), '加载统计失败');   // 统计卡并行加载，不阻塞题库列表
     safe(renderExamCard(), '加载考试计划失败'); // v27：倒计时/目标卡并行加载
+    refreshResumeBar();                         // v37.3：首页也显示恢复条（跨库/单库）
     const list = $('#bankList');
     if (!banks.length) {
       list.innerHTML = '<div class="empty">还没有题库，导入一个 .md / .txt 开始吧 👆</div>';
@@ -1530,14 +1531,14 @@
        <button class="btn secondary" id="redoPrac">再做一遍</button><div style="height:10px"></div>
        <button class="btn ghost" id="backBank">返回题库</button>`;
     if (skippedN) $('#redoSkipped').onclick = () => {
-      const map = {}; S.questions.forEach(q => map[q.id] = q);
+      const map = {}; prac.list.forEach(q => map[q.id] = q);   // v37.3：用本轮实际题目建索引（跨库模式 S.questions 是旧库的）
       const title = prac.title;
       stopTimer(prac);
       prac = { list: shuffle((prac.skipped || []).map(id => map[id]).filter(Boolean)), i: 0, wrong: [], correct: 0, wrongIds: [], skipped: [], results: [], title: title, startAt: Date.now(), timer: null };
       renderPractice();
     };
     if (prac.wrongIds.length) $('#reviewWrong').onclick = async () => {
-      const map = {}; S.questions.forEach(q => map[q.id] = q);
+      const map = {}; prac.list.forEach(q => map[q.id] = q);   // v37.3：用本轮实际题目建索引（跨库模式 S.questions 是旧库的）
       const title = prac.title;
       stopTimer(prac);
       prac = { list: shuffle(prac.wrongIds.map(id => map[id]).filter(Boolean)), i: 0, wrong: [], correct: 0, wrongIds: [], skipped: [], results: [], title: title, startAt: Date.now(), timer: null };
@@ -2094,21 +2095,35 @@
   // 顶部横幅「继续上次 · 第 N/M 题」一键接着做。考试有时限语义，不做续刷。
   const RESUME_KEY = 'resume-session';
   function saveResume(kind, holder) {
-    if (S.mixed) return;                     // v31：跨库会话不做断点续刷（恢复逻辑绑定单库）
+    // v37.3：跨库会话也保存——存完整题目列表（跨库题 ID 无法从单一题库查回）
     try {
-      localStorage.setItem(RESUME_KEY, JSON.stringify({
-        kind: kind, bankId: S.bank.id, title: holder.title || '',
-        qids: holder.list.map(q => q.id), i: holder.i,
-        correct: holder.correct || 0, wrongIds: holder.wrongIds || [],
+      const data = {
+        kind: kind, title: holder.title || '',
+        i: holder.i, correct: holder.correct || 0, wrongIds: holder.wrongIds || [],
         savedAt: Date.now()
-      }));
-    } catch (e) {}                       // 存不进（隐私模式/满了）就放弃续刷，不影响做题
+      };
+      if (S.mixed) {
+        data.mixed = true;
+        data.questions = holder.list;
+        if (data.i >= holder.list.length) return;
+      } else {
+        if (!S.bank || !S.bank.id) return;
+        data.bankId = S.bank.id;
+        data.qids = holder.list.map(q => q.id);
+      }
+      localStorage.setItem(RESUME_KEY, JSON.stringify(data));
+    } catch (e) {}
   }
   function clearResume() { try { localStorage.removeItem(RESUME_KEY); } catch (e) {} }
   function getResume(bankId) {
     try {
       const r = JSON.parse(localStorage.getItem(RESUME_KEY) || 'null');
-      if (r && r.bankId === bankId && Array.isArray(r.qids) && r.qids.length && r.i >= 0 && r.i < r.qids.length) return r;
+      if (!r) return null;
+      if (r.mixed) {
+        if (Array.isArray(r.questions) && r.questions.length && r.i >= 0 && r.i < r.questions.length) return r;
+        return null;
+      }
+      if (r.bankId === bankId && Array.isArray(r.qids) && r.qids.length && r.i >= 0 && r.i < r.qids.length) return r;
     } catch (e) {}
     return null;
   }
@@ -2120,25 +2135,50 @@
     return Math.floor(m / 1440) + ' 天前';
   }
   function refreshResumeBar() {
-    const bar = $('#resumeBar');
-    if (!bar) return;
     const r = getResume(S.bank && S.bank.id);
-    if (!r) { bar.classList.add('hidden'); return; }
-    const label = (r.kind === 'memorize' ? '🃏 背题' : '✍️ 刷题') +
-      (r.title && r.title !== '背题' && r.title !== '刷题' ? '「' + r.title + '」' : '');
-    $('#resumeDesc').textContent = `${label} 第 ${r.i + 1}/${r.qids.length} 题（${timeAgo(r.savedAt)}）`;
-    bar.classList.remove('hidden');
+    const bar = $('#resumeBar');
+    if (bar) {
+      if (!r) { bar.classList.add('hidden'); }
+      else {
+        const total = r.mixed ? r.questions.length : r.qids.length;
+        const label = (r.kind === 'memorize' ? '🃏 背题' : '✍️ 刷题') +
+          (r.title && r.title !== '背题' && r.title !== '刷题' ? '「' + r.title + '」' : '');
+        $('#resumeDesc').textContent = `${label} 第 ${r.i + 1}/${total} 题（${timeAgo(r.savedAt)}）`;
+        bar.classList.remove('hidden');
+      }
+    }
+    // v37.3：首页恢复条（跨库/单库都显示——退出后重开 App 第一眼就能看到）
+    const hBar = $('#homeResumeBar');
+    if (hBar) {
+      const hr = r || getResume(null);
+      if (!hr) { hBar.classList.add('hidden'); }
+      else {
+        const total = hr.mixed ? hr.questions.length : hr.qids.length;
+        const label = (hr.kind === 'memorize' ? '🃏 背题' : '✍️ 刷题') +
+          (hr.mixed ? '🔀 跨库' : '') +
+          (hr.title && hr.title !== '背题' && hr.title !== '刷题' ? '「' + hr.title + '」' : '');
+        $('#homeResumeDesc').textContent = `${label} 第 ${hr.i + 1}/${total} 题（${timeAgo(hr.savedAt)}）`;
+        hBar.classList.remove('hidden');
+      }
+    }
   }
   function resumeSession() {
-    const r = getResume(S.bank.id);
+    const r = getResume(S.bank ? S.bank.id : null) || (getResume(null));
     if (!r) { refreshResumeBar(); return; }
-    const qmap = {}; S.questions.forEach(q => qmap[q.id] = q);
-    const list = r.qids.map(id => qmap[id]).filter(Boolean);
+    let list;
+    if (r.mixed) {
+      // v37.3：跨库恢复——题目对象完整存着，直接用
+      list = r.questions;
+      S.mixed = true;
+    } else {
+      const qmap = {}; S.questions.forEach(q => qmap[q.id] = q);
+      list = r.qids.map(id => qmap[id]).filter(Boolean);
+    }
     if (!list.length) { clearResume(); refreshResumeBar(); return; }
     if (r.kind === 'memorize') {
       stopTimer(mem);
       (async () => {
-        const progs = await DB.listProgress(S.bank.id);
+        const progs = S.bank ? await DB.listProgress(S.bank.id) : [];
         const map = {}; progs.forEach(p => map[p.qid] = p);
         mem = { list: list, i: Math.min(r.i, list.length - 1), map, startAt: Date.now(), timer: null, title: r.title || '背题', maxSeen: Math.min(r.i, list.length - 1) + 1, skippedN: 0, review: false };
         S.pool = list;
@@ -2151,7 +2191,8 @@
       prac = { list: list, i: Math.min(r.i, list.length - 1), wrong: [], correct: r.correct || 0,
                wrongIds: r.wrongIds || [], skipped: [], results: [], title: r.title || '刷题', startAt: Date.now(), timer: null };
       S.pool = list;
-      setBack('bank', '‹ 题库');
+      // v37.3：跨库恢复走首页返回路径（S.bank 可能为 null）
+      setBack(S.mixed ? 'mixed' : 'bank', S.mixed ? '‹ 首页' : '‹ 题库');
       $('#title').textContent = prac.title;
       renderPractice();
     }
@@ -2493,6 +2534,9 @@
     // v23：断点续刷入口
     $('#resumeGo').onclick = () => resumeSession();
     $('#resumeDrop').onclick = () => { clearResume(); refreshResumeBar(); toast('已放弃上次的进度'); };
+    // v37.3：首页恢复条按钮
+    $('#homeResumeGo').onclick = () => resumeSession();
+    $('#homeResumeDrop').onclick = () => { clearResume(); refreshResumeBar(); toast('已放弃上次的进度'); };
     // 深色
     // 状态栏/地址栏染色必须跟 data-theme 走，否则切到深色后顶部还留一条浅色
     const syncThemeColor = () => {
