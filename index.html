@@ -6,12 +6,6 @@
   <!-- 与 .appbar 底色一致，装成 PWA 后顶部不留色差；切深色时由 app.js 同步 -->
   <meta name="theme-color" content="#fdfbf6" />
   <title>LEXA · 国际法题库</title>
-  <script>
-    try {
-      document.documentElement.dataset.skin = localStorage.getItem('skin') === 'atlas' ? 'atlas' : 'classic';
-      if (localStorage.getItem('theme') === 'dark') document.documentElement.dataset.theme = 'dark';
-    } catch (_) {}
-  </script>
   <link rel="manifest" href="manifest.webmanifest" />
   <link rel="icon" href="icon.svg" type="image/svg+xml" />
   <link rel="apple-touch-icon" href="icon.svg" />
@@ -27,61 +21,11 @@
     <h1><span class="brand-mark">LEXA</span><span class="brand-title" id="title">国际法题库</span></h1>
     <span class="spacer"></span>
     <button class="iconbtn" id="sfxBtn" title="音效开关">🔊</button>
-    <button class="iconbtn" id="skinBtn" title="切换皮肤">🎨</button>
     <button class="iconbtn" id="themeBtn" title="切换深色">🌓</button>
   </div>
 
   <!-- 首页：题库列表 + 导入 -->
   <div class="view" id="view-home">
-    <section class="study-hero">
-      <span class="study-kicker">00247 · 国际法 / v42</span>
-      <h2>先搭骨架，再拿分。</h2>
-      <p>总框架 → 选择题 → 名词解释 → 大题</p>
-      <button class="btn" id="lawCardsBtn" type="button">开始背 14 张小导图 ›</button>
-      <span class="muted">一张一主题 · 主干 → 关键词 → 完整解释</span>
-    </section>
-    <section class="review-entry">
-      <h3>骨架之后，分题型背</h3>
-      <p class="muted">先用39张精选卡串联，再分章练习 · 学习参考，非官方评分答案</p>
-      <p class="muted">名词卡用于打概念基础，不代表考试一定有单独的名词解释题。选择题之外，必须练简答、论述与案例。</p>
-      <div id="reviewCardsBtns" class="review-buttons">
-        <button class="btn" type="button" data-kind="intro">第1章导论 · 8 张导图＋7 道选择题</button>
-        <button class="btn secondary" type="button" data-kind="term">13 张名词解释</button>
-        <button class="btn secondary" type="button" data-kind="compare">13 张选择题易混卡</button>
-        <button class="btn secondary" type="button" data-kind="essay">13 张大题骨架</button>
-      </div>
-      <details class="map-explanation"><summary>第2—13章学习包 · 每章8张小导图＋7道单选</summary>
-        <p class="muted">分章独立保存，旧题库和进度不覆盖。背题选“概念与导图”，刷题选“选择题练习”。根据章节考核要求整理，非教材全文、非押题；自编题与本地资料题分别标注。</p>
-        <p class="muted">也可在手机导入单章 .md 文件：8张回忆卡＋7道单选。v41会为内容未修改的回忆卡显示小导图；已从下方打开的章节不必重复导入。</p>
-        <div id="chapterCardsBtns" class="review-buttons">
-          <button class="btn secondary" type="button" data-kind="chapter02">第2章 · 国家</button>
-          <button class="btn secondary" type="button" data-kind="chapter03">第3章 · 个人</button>
-          <button class="btn secondary" type="button" data-kind="chapter04">第4章 · 领土</button>
-          <button class="btn secondary" type="button" data-kind="chapter05">第5章 · 海洋法</button>
-          <button class="btn secondary" type="button" data-kind="chapter06">第6章 · 航空与外空</button>
-          <button class="btn secondary" type="button" data-kind="chapter07">第7章 · 外交与领事</button>
-          <button class="btn secondary" type="button" data-kind="chapter08">第8章 · 条约法</button>
-          <button class="btn secondary" type="button" data-kind="chapter09">第9章 · 国际法律责任</button>
-          <button class="btn secondary" type="button" data-kind="chapter10">第10章 · 国际组织</button>
-          <button class="btn secondary" type="button" data-kind="chapter11">第11章 · 人权</button>
-          <button class="btn secondary" type="button" data-kind="chapter12">第12章 · 和平解决争端</button>
-          <button class="btn secondary" type="button" data-kind="chapter13">第13章 · 战争与武装冲突</button>
-        </div>
-      </details>
-      <details class="map-explanation"><summary>第一天：导论怎么学</summary>
-        <p>先背五块：概念 → 渊源 → 主体 → 两法关系 → 基本原则。打开第一章学习包，背题模式选“概念、渊源、主体、两法关系、原则与案例”回忆8张导图；刷题模式选章节范围中的“选择题练习”，练7道选择题。</p>
-        <p>选择题含本地2025年4月资料中的5题和明确标记的2道自编题；来源答案不是官方核验答案。闭卷写两道骨架：国际法三项特征；国际习惯两要素。最后按“问题—规则—事实—结论”练使用武力案例，不把它当押题。</p>
-        <p>本包依据自考3652015年发布的章节考核要求整理，并补充条约原文；未取得指定教材全文。旧卡、旧题库与已有进度不覆盖。目标：能说出五块、解释选择题错因、写出至少两道分点答案。</p>
-      </details>
-      <details class="map-explanation"><summary>20 天怎么安排</summary>
-        <p>第 1—3 天：背总框架与章节骨架。第 4—10 天：分章选择题＋名词解释。第 11—15 天：闭卷写大题骨架。第 16—18 天：限时练习、补弱章。第 19—20 天：只收口错题与核心概念。</p>
-        <p>每天先回忆旧卡，再练选择题、核对错因。暂按约两小时：15 分钟旧卡、40 分钟选择题、30 分钟概念、25 分钟大题、10 分钟复盘。按你的实际时间调整。</p>
-      </details>
-      <details class="map-explanation"><summary>大题如何写出得分点</summary>
-        <p>简答：回应题意，按序号写定义、条件或原则。论述：先列骨架，再解释各点与相互关系。案例：法律问题 → 适用规则 → 结合案情 → 结论，并检查条件与例外。</p>
-        <p>写你能确定且与问题相关的要点，不编造条约条号或每点分值。具体得分以实际阅卷标准为准。</p>
-      </details>
-    </section>
     <!-- v27：考试倒计时 + 目标计划卡（考试日期/目标未设置时显示引导行），由 renderExamCard 填充 -->
     <div id="examCard" class="exam-card hidden"></div>
     <!-- F2：全站累计统计卡（题数/时长/连续打卡），由 renderHomeStats 填充 -->
@@ -92,10 +36,10 @@
       <button data-v="slice">✂️ 切片导出</button>
     </div>
     <div class="drop" id="dropZone">
-      📥 选择文字、图片或 PDF，也可以拖入文件<br />
-      <span class="muted" style="font-size:13px">图片可直接保存原图查看 · 也可本机识别、校对后转题目</span>
-      <input type="file" id="fileInput" accept=".md,.markdown,.txt,.text,.pdf,.png,.jpg,.jpeg,.webp" multiple class="file-picker" aria-label="选择文字、图片或 PDF 文件" />
+      📥 点击选择（可一次多选）或把 .md / .txt 文件 / 整个文件夹拖到这里<br />
+      <span class="muted" style="font-size:13px">自动解析成选择题 / 判断题 / 名词解释</span>
     </div>
+    <input type="file" id="fileInput" accept=".md,.markdown,.txt,.text" multiple class="hidden" />
     <div id="sliceArea" class="hidden">
       <div class="drop" id="sliceDrop">
         ✂️ 点击选择多个原始 .md / .txt（可拖入文件或文件夹）<br />
@@ -117,7 +61,6 @@
       </div>
       <button class="btn" id="pasteImport">解析并导入题库 ›</button>
     </div>
-    <section id="imageLibrary" class="image-library"></section>
     <div id="bankList"></div>
     <!-- v31：跨库刷题入口（多题库混合 / 只做选择题） -->
     <div class="mix-entry" id="mixEntry">🔀 跨库刷题 · 选几个题库（或全部）· 只做选择题 ›</div>
@@ -187,6 +130,12 @@
         <button data-v="due" class="on">⏰ 到期复习（今日该背）</button>
         <button data-v="all">📚 全书过卡（系统方案）</button>
       </div>
+      <!-- v37：背题题型筛选（多选专项等） -->
+      <div class="seg hidden" id="memTypeSeg">
+        <button data-v="all" class="on">全部题型</button><button data-v="choice">选择题</button>
+        <button data-v="multiple">多选专项</button><button data-v="judge">判断题</button>
+        <button data-v="essay">主观题</button>
+      </div>
       <div id="chapterPicker" class="chapter-picker hidden"></div>
       <button class="btn" id="rangeStart">开始 ›</button>
       <button class="btn ghost" id="rangeCancel">取消</button>
@@ -216,16 +165,6 @@
 
   <!-- F1：错题本（内容全由 app.js 渲染） -->
   <div class="view hidden" id="view-wrong"></div>
-  <div class="view hidden" id="view-images">
-    <h2 id="imageName"></h2>
-    <div class="image-actions">
-      <label>缩放 <select id="imageZoom" aria-label="原图缩放"><option value="100">适合宽度</option><option value="150">150%</option><option value="200">200%</option><option value="300">300%</option></select></label>
-      <a class="btn secondary small" id="imageDownload" download>下载原图</a>
-      <button class="btn ghost small" id="imageDelete" type="button">删除此图</button>
-    </div>
-    <p class="muted" id="imageStatus" role="status"></p>
-    <div class="image-scroll"><img id="savedImage" alt="" /></div>
-  </div>
 
   <!-- v20：恢复备份方式选择（合并 / 覆盖 / 取消） -->
   <div class="modal-mask hidden" id="restoreModal">
@@ -240,17 +179,6 @@
     </div>
   </div>
 
-  <div class="modal-mask hidden" id="skinModal" role="dialog" aria-modal="true" aria-labelledby="skinTitle">
-    <div class="modal-card">
-      <h3 id="skinTitle">🎨 选择皮肤</h3>
-      <div class="muted">只改变外观，不影响题库和学习记录。浅色／深色仍用顶部 🌓 切换。</div>
-      <div class="skin-options" id="skinOptions">
-        <button class="skin-choice" data-v="classic" aria-pressed="false">经典原版<span>保留原来的界面</span></button>
-        <button class="skin-choice" data-v="atlas" aria-pressed="false">环球纸境<span>地球插画 · 圆润卡片</span></button>
-      </div>
-      <button class="btn ghost" id="skinClose">完成</button>
-    </div>
-  </div>
   <!-- v23：声音与震动设置（音效包换包即试听） -->
   <div class="modal-mask hidden" id="sfxModal">
     <div class="modal-card">
@@ -261,45 +189,33 @@
         </div>
       </div>
       <!-- v29：音量三档——手机外放听合成音偏轻，响度交给用户 -->
-      <div class="field"><label>音效音量</label>
+      <div class="field"><label>音量</label>
         <div class="seg" id="volSeg">
           <button data-v="0.6">轻</button><button data-v="1">标准</button><button data-v="1.6">响</button>
         </div>
       </div>
       <div class="field"><label>音效包（切换即试听）</label>
         <div class="seg" id="packSeg">
-          <button data-v="crisp">清脆</button><button data-v="soft">柔和</button><button data-v="wood">木质</button><button data-v="retro">怀旧</button><button data-v="study">静心</button>
+          <button data-v="crisp">清脆</button><button data-v="soft">柔和</button><button data-v="wood">木质</button><button data-v="retro">怀旧</button>
         </div>
       </div>
-      <div class="sound-preview" id="soundPreview">
-        <button class="btn secondary" data-sound="flip">翻卡试听</button><button class="btn secondary" data-sound="right">答对试听</button><button class="btn secondary" data-sound="wrong">答错试听</button>
-      </div>
-      <div class="field hidden" id="vibeField"><label>震动（独立于声音开关）</label>
+      <div class="field hidden" id="vibeField"><label>震动（做完一题 / 答错时轻震）</label>
         <div class="seg" id="vibeSeg">
           <button data-v="1">开</button><button data-v="0">关</button>
         </div>
-        <div class="seg" id="vibeLevelSeg" style="margin-top:8px">
-          <button data-v="light">轻触</button><button data-v="standard">标准</button>
-        </div>
-        <button class="btn secondary" id="vibePreview" style="margin-top:8px">测试震动</button>
       </div>
-      <div class="muted" id="vibeUnsupported" style="font-size:12px;margin-bottom:12px">当前浏览器不支持网页震动。iPhone Safari 通常不可用；音效可正常使用。</div>
       <!-- v28：背景音乐（内置合成曲 + 本地音乐导入，曲目可扩展） -->
       <div class="field"><label>背景音乐（做题时轻声循环）</label>
         <div class="seg" id="bgmOnSeg">
           <button data-v="1">开</button><button data-v="0">关</button>
         </div>
         <select id="bgmTrack"></select>
-        <label style="margin-top:10px">背景音乐音量</label>
-        <div class="seg" id="bgmVolSeg">
-          <button data-v="0.3">轻声</button><button data-v="0.6">适中</button><button data-v="1">标准</button>
-        </div>
         <div class="eq-row" style="margin-top:8px">
           <button class="btn secondary" id="bgmAdd">＋ 添加本地音乐</button>
           <button class="btn secondary hidden" id="bgmDel">删</button>
         </div>
         <input type="file" id="bgmFile" accept="audio/*" class="hidden">
-        <div class="muted" style="font-size:12px;margin-top:4px">支持 mp3 / m4a / ogg / wav，存在本机不联网。切到后台暂停，返回后点击恢复；部分 iPhone 浏览器的本地音乐音量需用系统音量调节。</div>
+        <div class="muted" style="font-size:12px;margin-top:4px">支持 mp3 / m4a / ogg / wav，存在本机不联网</div>
       </div>
       <!-- v34.3：导出题库清洗规则（给外部 AI 的导入规范） -->
       <button class="btn secondary" id="exportRulesBtn">📤 导出清洗规则（AI 导入规范）</button>
@@ -407,28 +323,6 @@
 
   <div class="toast" id="toast"></div>
 
-  <div class="modal-mask hidden" id="docModal" role="dialog" aria-modal="true" aria-labelledby="docTitle">
-    <div class="modal-card doc-modal">
-      <div class="doc-heading"><h3 id="docTitle">图片 / PDF · 识别与校对</h3><button class="btn ghost small" id="docClose" type="button">取消 / 关闭</button></div>
-      <p class="muted">原件不上传服务器。不自动生成答案；无答案的选择题不会入库，请在文字中补充经核实的答案。</p>
-      <div class="field"><label for="docName">题库名称</label><input id="docName" type="text" maxlength="100"></div>
-      <div class="doc-actions">
-        <label>从 <input id="docFrom" type="number" min="1" value="1" aria-label="开始页"> 页</label>
-        <label>到 <input id="docTo" type="number" min="1" value="3" aria-label="结束页"> 页</label>
-        <label><input id="docForceOcr" type="checkbox"> 强制图片识别（文字乱序时）</label>
-        <button class="btn small" id="docExtract" type="button">开始识别</button>
-        <button class="btn secondary small hidden" id="docSaveImages" type="button">保存原图（不识别）</button>
-      </div>
-      <p id="docStatus" class="doc-status" role="status" aria-live="polite"></p>
-      <div class="doc-columns">
-        <section><div class="doc-heading"><b>原件</b><div><button class="btn ghost small" id="docPrev" type="button">上一页</button><span id="docPageLabel"></span><button class="btn ghost small" id="docNext" type="button">下一页</button></div></div><div id="docSource" class="doc-source"></div></section>
-        <section><label for="docText"><b>校对文字</b> · 可直接修改题号、选项与答案</label><textarea id="docText" rows="18" spellcheck="false" placeholder="1. 题干&#10;A. 选项&#10;B. 选项&#10;答案：A"></textarea><button class="btn secondary" id="docPreview" type="button">预览解析后的题目</button></section>
-      </div>
-      <p id="docCount" class="muted"></p><div id="docQuestions" class="doc-questions"></div>
-      <button class="btn" id="docConfirm" type="button" disabled>确认校对并导入</button>
-    </div>
-  </div>
-
   <script src="db.js"></script>
   <script src="parser.js"></script>
   <script src="slicer.js"></script>
@@ -436,9 +330,6 @@
   <script src="scoring.js"></script>
   <script src="sfx.js"></script>
   <script src="bgm.js"></script>
-  <script src="law-cards.js"></script>
-  <script src="review-cards.js"></script>
-  <script src="document-import.js"></script>
   <script src="app.js"></script>
   <script>
     if ('serviceWorker' in navigator) {

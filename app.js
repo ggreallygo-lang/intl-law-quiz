@@ -9,17 +9,13 @@
   document.addEventListener('pointerdown', function () {
     if (window.SFX) SFX.warm();
     if (window.BGM) BGM.resume();   // v28：背景音乐开着时借首次手势起播（iOS 策略）
-  }, { passive: true });
-  document.addEventListener('visibilitychange', function () {
-    if (document.hidden && window.BGM) BGM.stop();
-  });
+  }, { once: true, passive: true });
   const TYPE_LABEL = {
     single: '单选题', multiple: '多选题', judge: '判断题',
     term: '名词解释', fill: '填空题', essay: '简答题'
   };
   // v21：模式名（模式卡片选中态 / 练习范围条 / 开始按钮共用）
   const MODE_LABEL = { memorize: '🃏 背题', practice: '✍️ 刷题', exam: '⏱️ 考试' };
-  const REVIEW_LABEL = { term: '名词解释', essay: '大题骨架', compare: '选择题易混卡', intro: '第1章导论学习包', chapter02: '第2章国家学习包', chapter03: '第3章个人学习包', chapter04: '第4章领土学习包', chapter05: '第5章海洋法学习包', chapter06: '第6章航空与外空学习包', chapter07: '第7章外交与领事学习包', chapter08: '第8章条约法学习包', chapter09: '第9章国际法律责任学习包', chapter10: '第10章国际组织学习包', chapter11: '第11章人权学习包', chapter12: '第12章和平解决争端学习包', chapter13: '第13章战争与武装冲突学习包' };
 
   // pool = 当前练习范围内的题目（全库或按章节筛出的子集）
   const S = { bank: null, questions: [], pool: [], outline: [], selectedChapter: null, back: 'home', pendingMode: null, cleaned: null };
@@ -99,16 +95,10 @@
   // 记录当前视图：离开「学习页」时要清理定时器，
   // 否则考试倒计时会在已经切走的页面上触发交卷，把结果渲染到错误的视图里
   let curView = null;
-  let imageUrl = null;
   function showView(name) {
     if (curView === 'study' && name !== 'study') cleanupStudy();
-    if (curView === 'images' && imageUrl) {
-      $('#savedImage').removeAttribute('src');
-      $('#imageDownload').removeAttribute('href');
-      URL.revokeObjectURL(imageUrl); imageUrl = null;
-    }
     curView = name;
-    ['home', 'bank', 'study', 'wrong', 'images'].forEach(v => $('#view-' + v).classList.toggle('hidden', v !== name));
+    ['home', 'bank', 'study', 'wrong'].forEach(v => $('#view-' + v).classList.toggle('hidden', v !== name));
   }
   function cleanupStudy() {
     stopTimer(exam); stopTimer(prac); stopTimer(mem);   // v21：三个模式的计时器统一停
@@ -131,65 +121,8 @@
   }
 
   // ---------- 题库列表（首页） ----------
-  async function saveImages(files) {
-    let saved = 0;
-    for (const file of files) {
-      try {
-        await DB.saveMedia({ id: 'study-image-' + crypto.randomUUID(), kind: 'study-image', name: file.name, blob: file, createdAt: Date.now() });
-        saved++;
-      } catch (err) {
-        await renderImageLibrary();
-        throw new Error('已保存 ' + saved + ' 张；未保存的图片请重新选择。' + err.message);
-      }
-    }
-    await renderImageLibrary();
-    toast('已保存 ' + saved + ' 张原图，可在首页打开');
-    return saved;
-  }
-  async function renderImageLibrary() {
-    const images = await DB.listMedia('study-image');
-    const target = $('#imageLibrary');
-    target.replaceChildren();
-    if (!images.length) return;
-    const heading = document.createElement('h3');
-    heading.textContent = '图片资料 · ' + images.length + ' 张';
-    const note = document.createElement('p');
-    note.className = 'muted';
-    note.textContent = '原图仅保存在当前浏览器，题库 JSON 备份不包含原图；请保留源文件或下载备份。';
-    target.append(heading, note);
-    images.sort((a, b) => b.createdAt - a.createdAt).forEach(record => {
-      const button = document.createElement('button');
-      button.className = 'image-entry'; button.type = 'button';
-      button.textContent = '▧ ' + record.name + ' ›';
-      button.onclick = () => safe(openImage(record.id), '打开原图失败');
-      target.appendChild(button);
-    });
-  }
-  async function openImage(id) {
-    const record = await DB.getMedia(id);
-    if (!record || !(record.blob instanceof Blob)) { toast('原图不存在，请重新导入'); return; }
-    showView('images');
-    setBack('home', '‹ 首页'); $('#backBtn').classList.remove('hidden');
-    $('#title').textContent = '图片资料'; $('#imageName').textContent = record.name;
-    imageUrl = URL.createObjectURL(record.blob);
-    const img = $('#savedImage');
-    $('#imageStatus').textContent = '正在打开原图…';
-    img.onload = () => { $('#imageStatus').textContent = img.naturalWidth + ' × ' + img.naturalHeight + ' · 放大后可左右、上下滑动查看'; };
-    img.onerror = () => { $('#imageStatus').textContent = '无法显示此图片，请下载原图检查文件是否损坏。'; };
-    img.alt = record.name; img.style.width = '100%'; img.src = imageUrl;
-    $('#imageZoom').value = '100';
-    $('#imageZoom').onchange = () => { img.style.width = $('#imageZoom').value + '%'; };
-    const link = $('#imageDownload'); link.href = imageUrl; link.download = record.name;
-    $('#imageDelete').onclick = () => safe((async () => {
-      if (!confirm('删除这张本机原图？请先确认已保存源文件。')) return;
-      await DB.deleteMedia(id);
-      showView('home'); setBack('home'); $('#title').textContent = '国际法题库';
-      await renderHome(); toast('已删除本机原图，源文件不受影响');
-    })(), '删除原图失败');
-  }
   async function renderHome() {
     const banks = await DB.listBanks();
-    safe(renderImageLibrary(), '加载原图失败');
     safe(renderHomeStats(), '加载统计失败');   // 统计卡并行加载，不阻塞题库列表
     safe(renderExamCard(), '加载考试计划失败'); // v27：倒计时/目标卡并行加载
     const list = $('#bankList');
@@ -394,6 +327,8 @@
       `<label class="ck-row"><input type="checkbox" data-id="${esc(b.id)}" checked>` +
       `<span>${esc(b.name)}（${b.count || 0} 题）</span></label>`).join('');
     $('#mixBanks').querySelectorAll('input').forEach(i => i.onchange = updateMixHint);
+    const savedOrd = localStorage.getItem('ord-mix');   // v36：恢复上次顺序选择
+    $('#mixOrderSeg').querySelectorAll('button').forEach(x => x.classList.toggle('on', x.dataset.v === (savedOrd || 'rand')));
     updateMixHint();
     $('#mixModal').classList.remove('hidden');
   }
@@ -810,6 +745,13 @@
       Object.keys(chapCnt).map(c => [c, c, chapCnt[c]]));
 
     let html = `<div class="bank-summary">`;
+    // v37：毕业标准可调（连对 2/3/5 次自动移出「进行中」）——只在进行中视图显示
+    if (wb.view === 'active') {
+      const gn = DB.wrongGradN();
+      html += `<div class="wb-grad-set">毕业标准：连对 ` +
+        [2, 3, 5].map(n => `<button class="wb-chip${n === gn ? ' on' : ''}" data-kind="gradn" data-v="${n}">${n} 次</button>`).join('') +
+        ` 自动移出</div>`;
+    }
     if (wb.view === 'grad') {
       html += `<div class="sum-main"><b>${items.length}</b> 道已毕业 🎓</div>` +
         `<div class="sum-sub">自动移除规范：连对 ${DB.wrongGradN()} 次自动移出「进行中」，历史统计保留；点「重新练习」收回活跃</div>`;
@@ -862,7 +804,11 @@
 
     view.querySelectorAll('.wb-chip').forEach(b => {
       b.onclick = () => {
-        if (b.dataset.kind === 'view') {
+        if (b.dataset.kind === 'gradn') {          // v37：切换毕业标准
+          localStorage.setItem('wrong-grad-n', b.dataset.v);
+          toast('毕业标准已改为连对 ' + b.dataset.v + ' 次');
+          renderWrongBook();
+        } else if (b.dataset.kind === 'view') {
           if (b.dataset.v === wb.view) return;
           wb.view = b.dataset.v || 'active';
           wb.type = null; wb.chapter = null;      // 视图切换时清掉题型/章节筛选
@@ -1140,28 +1086,11 @@
       front = `<div class="tag">${TYPE_LABEL[q.type]}</div><div class="stem">${esc(q.stem)}</div>` +
         (q.options || []).map(o => `<div class="opt">${esc(o.key)}. ${esc(o.text)}</div>`).join('');
       // 走 scoring：answer 是字符串 / undefined 时 .map 会直接崩掉整个背题页
-      back = `<div class="def">答案：${esc(Scoring.answerText(q))}</div>`;
+      back = (q.type === 'single' || q.type === 'multiple' || q.type === 'judge' || q.type === 'fill')
+        ? ansBanner(q, null) + `<div class="def" style="font-size:15px">${esc(Scoring.answerText(q))}</div>`
+        : `<div class="def">答案：${esc(Scoring.answerText(q))}</div>`;
     }
     if (q.explanation) back += `<div class="exp">解析：${esc(q.explanation)}</div>`;
-    const lawCard = (window.LAW_CARDS || []).concat(window.LAW_REVIEW || []).find(card =>
-      (q.chapterId === card.id || q.chapter === card.chapter) && q.explanation === '记忆抓手：' + card.cue &&
-      (q.type === 'term' ? q.term === card.front && q.definition === card.back : q.type === 'essay' && q.stem === card.front && q.answer === card.back));
-    if (lawCard && lawCard.map) {
-      front = `<div class="tag">${esc(REVIEW_LABEL[lawCard.kind] || '导图回忆卡')}</div><div class="stem">${esc(lawCard.front)}</div>` +
-        `<div class="map-recall"><span>${esc(lawCard.map.center)}</span><p>闭眼想一想：能说出哪 ${lawCard.map.branches.length} 条主干？</p></div>`;
-      back = `<div class="law-mindmap" role="group" aria-label="${esc(lawCard.map.center)}思维导图">` +
-        `<div class="map-center">${esc(lawCard.map.center)}</div><div class="map-branches">` +
-        lawCard.map.branches.map((branch, i) => `<details class="map-branch map-color-${i % 3}" open>` +
-          `<summary><span class="map-index">${pad2(i + 1)}</span>${esc(branch.title)}</summary>` +
-          `<ul>${branch.items.map(item => `<li>${esc(item)}</li>`).join('')}</ul></details>`).join('') + `</div></div>` +
-        `<div class="map-cue">记忆线：${esc(lawCard.cue)}</div>` +
-        `<details class="map-explanation"><summary>展开完整解释</summary><div class="def">${esc(lawCard.back)}</div></details>`;
-      if (lawCard.sources && lawCard.sources.length) {
-        back += '<details class="map-explanation"><summary>核对依据与出处</summary><p class="muted">自编学习要点，不代替指定教材或官方评分答案。</p>' +
-          lawCard.sources.filter(source => /^https:\/\//.test(source.url)).map(source =>
-            `<p><a href="${esc(source.url)}" target="_blank" rel="noopener noreferrer">${esc(source.title)}</a></p>`).join('') + '</details>';
-      }
-    }
     // v14：真 3D 翻转结构 —— 正反面同时渲染、grid 叠放，翻面只是加 .flipped 转 180°
     // （旧版是 innerHTML 硬塞 front+back，没有任何转场，被用户吐槽"假翻转"）
     view.innerHTML =
@@ -1169,7 +1098,7 @@
       `<span class="mtimer" id="mtTimer">⏱ ${fmtElapsed(Date.now() - (mem.startAt || Date.now()))}</span>` +
       `<div class="progress-bar"><span style="width:${(mem.i / total) * 100}%"></span></div></div>` +
       `<div class="study-body slide-in">` +
-      `<div class="flip3d${lawCard ? ' law-map-card' : ''}" id="card">` +
+      `<div class="flip3d" id="card">` +
         `<div class="flip3d-inner">` +
           `<div class="flip-face flip-front">${chapterLine}${front}</div>` +
           `<div class="flip-face flip-back">${chapterLine}<div class="tag">答案</div>${stemMini}${back}</div>` +
@@ -1370,10 +1299,9 @@
         <div class="option" data-v="1"><span class="key">✓</span> 对</div>
         <div class="option" data-v="0"><span class="key">✗</span> 错</div>`;
     } else {
-      const opts = q.options.slice().sort((a, b) => a.key.localeCompare(b.key));
+      const opts = shuffle(q.options);
       body = `<div class="q-stem"><span class="qnum">${TYPE_LABEL[q.type]} ${prac.i + 1}/${total}</span>${esc(q.stem)}</div>` +
         opts.map(o => `<div class="option" data-k="${o.key}"><span class="key">${o.key}</span> ${esc(o.text)}</div>`).join('');
-      if (q.type === 'multiple') body += `<p class="muted">可选择多个选项，再点提交答案；再次点击可取消选择。</p><button class="btn" id="multiSubmit">提交答案</button>`;
     }
     // v14：题干+选项包一层 .slide-in，切题时从右侧滑入，不再是"啪"地整屏替换
     // v28：导航行常驻（上一题 / 跳过）；results[i] 有作答记录时进「回看」模式
@@ -1435,10 +1363,6 @@
     opts.forEach(op => {
       op.onclick = () => {
         if (op.classList.contains('locked')) return;
-        if (q.type === 'multiple') {
-          op.classList.toggle('chosen');
-          return;
-        }
         opts.forEach(o => o.classList.add('locked'));
         const picked = (q.type === 'judge') ? op.dataset.v : op.dataset.k;
         // 统一走 scoring.js：answer 可能是数组/字符串/undefined，直接 .includes 会静默误判
@@ -1459,30 +1383,10 @@
       };
     });
 
-    if (q.type === 'multiple') {
-      $('#multiSubmit').onclick = () => {
-        const btn = $('#multiSubmit');
-        if (btn.disabled) return;
-        const picked = Array.from(opts).filter(o => o.classList.contains('chosen')).map(o => o.dataset.k);
-        if (!picked.length) { toast('请先选择答案'); return; }
-        btn.disabled = true;
-        const right = Scoring.isRight(q, picked);
-        const keys = Scoring.answerKeys(q);
-        opts.forEach(o => {
-          o.classList.add('locked');
-          if (keys.includes(o.dataset.k)) o.classList.add('correct');
-          if (!right && o.classList.contains('chosen')) o.classList.add('wrong', 'shake');
-          if (right && o.classList.contains('correct')) o.classList.add('pop');
-        });
-        finishPractice(q, right, picked);
-      };
-    }
-
     // v28：回看模式 —— 这一题已做过（results[i] 是作答记录）：锁选项、复放反馈，不重复计分
     if (rec && rec !== 'skip') {
       const rOpts = view.querySelectorAll('.option');
       rOpts.forEach(o => o.classList.add('locked'));
-      if ($('#multiSubmit')) $('#multiSubmit').disabled = true;
       if (q.type === 'judge') {
         const want = q.answer ? '1' : '0';
         rOpts.forEach(o => {
@@ -1520,12 +1424,27 @@
       };
     }
   }
+  // v36：大号答案横幅（多选一眼看清）——正确键做成徽章块 + 选项原文小字
+  function ansBanner(q, right) {
+    let keys = [];
+    if (q.type === 'judge') keys = [q.answer ? '对' : '错'];
+    else if (Array.isArray(q.answer)) keys = q.answer.map(String);
+    else if (q.answer != null) keys = String(q.answer).replace(/[\s,，、]/g, '').split('');
+    const badges = keys.map(k => '<span class="ans-key">' + esc(k) + '</span>').join('');
+    const txt = (q.type === 'judge') ? '' : esc(Scoring.answerText(q));
+    return '<div class="ans-banner' + (right ? '' : ' bad') + '">' +
+      (right ? '<span>✅ 答对</span>' : '<span>正确答案</span>') + badges +
+      (txt && txt.length <= 90 ? '<span class="ans-txt">' + txt + '</span>' : '') + '</div>';
+  }
+
   async function finishPractice(q, right, picked) {
     if (right) SFX.right(); else SFX.wrong();   // v22：判分音效（选项/填空/自评三条路都汇到这里）
     const fb = $('#pracFeedback');
-    let html = right
+    // v36：客观题先给大号答案横幅（判断/选择/填空；自评题不需要）
+    const banner = Scoring.isSelfAssess(q) ? '' : ansBanner(q, right);
+    let html = banner + (right
       ? `<div class="feedback ok">✓ 答对${q.explanation ? `<span class="sub">解析：${esc(q.explanation)}</span>` : ''}</div>`
-      : `<div class="feedback bad">✗ 答错，正确答案：${esc(Scoring.answerText(q))}${q.explanation ? `<span class="sub">解析：${esc(q.explanation)}</span>` : ''}</div>`;
+      : `<div class="feedback bad">✗ 答错${q.explanation ? `<span class="sub">解析：${esc(q.explanation)}</span>` : ''}</div>`);
     if (!Scoring.hasAnswer(q)) {
       html += `<div class="muted" style="margin-top:6px;font-size:13px">⚠️ 这道题没识别到答案，已按「答错」计，建议导出后手工补上</div>`;
     }
@@ -1605,7 +1524,8 @@
         ? `<button class="btn" id="reviewWrong">🔁 复习错题（${prac.wrongIds.length}）</button>
            <div style="height:10px"></div>`
         : `<div class="empty">${answered ? '全部答对，稳！' : '全部跳过了…再来一遍？'}</div>`) +
-      `<button class="btn secondary" id="redoPrac">再做一遍</button><div style="height:10px"></div>
+      `<button class="btn" id="memThis">🃏 背这批题</button><div style="height:10px"></div>
+       <button class="btn secondary" id="redoPrac">再做一遍</button><div style="height:10px"></div>
        <button class="btn ghost" id="backBank">返回题库</button>`;
     if (skippedN) $('#redoSkipped').onclick = () => {
       const map = {}; S.questions.forEach(q => map[q.id] = q);
@@ -1622,6 +1542,7 @@
       renderPractice();
     };
     $('#redoPrac').onclick = () => startPractice({ title: prac.title });
+    $('#memThis').onclick = () => startMode('memorize', prac.list.slice(), { title: '背这批题', all: true });   // v37
     $('#backBank').onclick = () => { if (S.mixed) { S.mixed = false; openHomeView(); } else openBank(S.bank.id); };
   }
 
@@ -1638,7 +1559,7 @@
     });
     const view = $('#view-study'); showView('study');
     if (!gradable.length) { toast('本题库没有可计分的客观题'); openBank(S.bank.id); return; }
-    const settings = { n: 'all', min: 0, shuffleOpt: false };
+    const settings = { n: 'all', min: 0, shuffleOpt: true };
     view.innerHTML =
       `<h3 style="margin-top:0">⏱️ 考试设置</h3>
       <div class="field"><label>题量</label><div class="seg" id="segN">
@@ -1648,7 +1569,7 @@
       <div class="field"><label>时长（分钟，0 = 不限时）</label>
         <input type="number" id="examMin" min="0" step="1" value="0" /></div>
       <div class="field"><label>选项乱序</label><div class="seg" id="segOpt">
-        <button data-v="1">开</button><button data-v="0" class="on">关</button></div></div>
+        <button data-v="1" class="on">开</button><button data-v="0">关</button></div></div>
       <button class="btn" id="startExam">开始考试 ›</button>`;
     $('#segN').querySelectorAll('button').forEach(b => b.onclick = () => {
       $('#segN').querySelectorAll('button').forEach(x => x.classList.remove('on')); b.classList.add('on'); settings.n = b.dataset.v;
@@ -1712,7 +1633,7 @@
       body = `<div class="q-stem"><span class="qnum">${timerHtml}填空题 ${exam.i + 1}/${total}</span>${esc(q.stem)}</div>
         <input type="text" id="fillInput" class="fill-input" value="${esc(saved)}" placeholder="输入答案（回车跳下一题）" autocomplete="off" />`;
     } else {
-      const opts = exam.shuffleOpt ? shuffle(q.options) : q.options.slice().sort((a, b) => a.key.localeCompare(b.key));
+      const opts = exam.shuffleOpt ? shuffle(q.options) : q.options;
       body = `<div class="q-stem"><span class="qnum">${timerHtml}${TYPE_LABEL[q.type]} ${exam.i + 1}/${total}</span>${esc(q.stem)}</div>` +
         opts.map(o => `<div class="option" data-k="${o.key}"><span class="key">${o.key}</span> ${esc(o.text)}</div>`).join('');
     }
@@ -1732,7 +1653,6 @@
         if (q.type === 'multiple') renderExamMulti(q);
       };
     });
-    if (q.type === 'multiple') renderExamMulti(q);
     // 填空题：边打字边存，切题/交卷都不丢
     if (q.type === 'fill') {
       const inp = $('#fillInput');
@@ -1802,7 +1722,7 @@
     wrongList.forEach(w => {
       if (!Scoring.hasAnswer(w.q)) noAns.push(w.q);
       wrongHtml += `<div class="wrong-item"><div>${esc(w.q.stem || w.q.term)}</div>
-        <div class="a">正确答案：${esc(Scoring.answerText(w.q))}</div>
+        <div class="a">${ansBanner(w.q, false)}</div>
         ${w.q.explanation ? `<div class="muted" style="font-size:13px;margin-top:4px">解析：${esc(w.q.explanation)}</div>` : ''}</div>`;
     });
     view.innerHTML =
@@ -1871,10 +1791,15 @@
     const segOn = (sel, v) => $(sel).querySelectorAll('button').forEach(x => x.classList.toggle('on', x.dataset.v === v));
     $('#orderSeg').classList.toggle('hidden', mode !== 'practice');
     $('#planSeg').classList.toggle('hidden', mode !== 'memorize');
-    if (mode === 'practice') segOn('#orderSeg', 'rand');
-    if (mode === 'memorize') segOn('#planSeg', 'due');
-    $('#orderSeg').querySelectorAll('button').forEach(b => b.onclick = () => segOn('#orderSeg', b.dataset.v));
-    $('#planSeg').querySelectorAll('button').forEach(b => b.onclick = () => segOn('#planSeg', b.dataset.v));
+    $('#memTypeSeg').classList.toggle('hidden', mode !== 'memorize');   // v37：背题题型筛选
+    if (mode === 'practice') segOn('#orderSeg', localStorage.getItem('ord-practice') || 'rand');
+    if (mode === 'memorize') {
+      segOn('#planSeg', localStorage.getItem('ord-memorize') || 'due');
+      segOn('#memTypeSeg', localStorage.getItem('memtype') || 'all');
+    }
+    $('#orderSeg').querySelectorAll('button').forEach(b => b.onclick = () => { segOn('#orderSeg', b.dataset.v); localStorage.setItem('ord-practice', b.dataset.v); });
+    $('#planSeg').querySelectorAll('button').forEach(b => b.onclick = () => { segOn('#planSeg', b.dataset.v); localStorage.setItem('ord-memorize', b.dataset.v); });
+    $('#memTypeSeg').querySelectorAll('button').forEach(b => b.onclick = () => { segOn('#memTypeSeg', b.dataset.v); localStorage.setItem('memtype', b.dataset.v); });
     buildChapterPicker();
     updateRangeHint();
     $('#rangeStart').onclick = () => {
@@ -1890,6 +1815,16 @@
       }
       bar.classList.add('hidden');
       clearModeSel();
+      // v37：背题题型筛选（全部/选择/多选专项/判断/主观）——复用跨库的题型集合，multiple 单列
+      if (S.pendingMode === 'memorize') {
+        const tb = $('#memTypeSeg').querySelector('button.on');
+        const tv = tb ? tb.dataset.v : 'all';
+        if (tv !== 'all') {
+          const set = tv === 'multiple' ? ['multiple'] : MIX_TYPE_SETS[tv];
+          if (set) list = list.filter(q => set.indexOf(q.type) >= 0);
+          if (!list.length) { toast('这个范围里没有该题型的题'); return; }
+        }
+      }
       // v30：带上顺序（刷题）/ 方案（背题）
       const ordBtn = $('#orderSeg').querySelector('button.on');
       const planBtn = $('#planSeg').querySelector('button.on');
@@ -1918,56 +1853,6 @@
   }
 
   // ---------- 导入 ----------
-  async function openReviewCards(kind, button) {
-    const cards = (window.LAW_REVIEW || []).filter(card => card.kind === kind);
-    if (!cards.length) { toast('复习内容尚未加载，请检查上传文件'); return; }
-    button.disabled = true;
-    try {
-      const metaKey = 'intl-law-review-' + kind + '-v1';
-      const bankId = await DB.getMeta(metaKey);
-      let bank = bankId ? await DB.getBank(bankId) : null;
-      if (!bank) {
-        const chapterCards = kind === 'intro' || /^chapter\d{2}$/.test(kind) ? cards.filter((card, i) => cards.findIndex(item => item.chapter === card.chapter) === i) : cards;
-        const outline = chapterCards.map(card => ({ id: card.id, title: card.chapter, level: 2, path: [card.chapter], children: [] }));
-        bank = await DB.saveBank('国际法 · ' + REVIEW_LABEL[kind] + ' · ' + cards.length + ' 张', outline);
-        try {
-          await DB.addQuestions(bank.id, cards.map(card => {
-            const type = card.type || (kind === 'term' ? 'term' : 'essay');
-            return Object.assign({
-              type, explanation: card.explanation || '记忆抓手：' + card.cue,
-              chapter: card.chapter, chapterId: card.id, chapterPath: [card.chapter]
-            }, type === 'term' ? { term: card.front, definition: card.back } :
-              { stem: card.front, answer: card.back, options: card.options || [] });
-          }));
-          await DB.setMeta(metaKey, bank.id);
-        } catch (err) { await DB.deleteBank(bank.id).catch(() => {}); throw err; }
-      }
-      await openBank(bank.id);
-      if (kind !== 'intro' && !/^chapter\d{2}$/.test(kind)) await startMemorize({ plan: 'all' });
-    } finally { button.disabled = false; }
-  }
-  async function openLawCards() {
-    const button = $('#lawCardsBtn');
-    button.disabled = true;
-    try {
-      const bankId = await DB.getMeta('intl-law-outline-v1');
-      let bank = bankId ? await DB.getBank(bankId) : null;
-      if (!bank) {
-        const outline = LAW_CARDS.map(card => ({ id: card.id, title: card.chapter, level: 2, path: [card.chapter], children: [] }));
-        bank = await DB.saveBank('国际法 · 14 张框架卡', outline);
-        try {
-          await DB.addQuestions(bank.id, LAW_CARDS.map(card => ({
-            type: 'essay', stem: card.front, answer: card.back,
-            explanation: '记忆抓手：' + card.cue,
-            chapter: card.chapter, chapterId: card.id, chapterPath: [card.chapter]
-          })));
-          await DB.setMeta('intl-law-outline-v1', bank.id);
-        } catch (err) { await DB.deleteBank(bank.id).catch(() => {}); throw err; }
-      }
-      await openBank(bank.id);
-      await startMemorize({ plan: 'all' });
-    } finally { button.disabled = false; }
-  }
   // 水印清洗统计：导入前重置，saveParsed 累加，提示语里回显
   function resetCleaned() { S.cleaned = { removedLines: 0, strippedLines: 0 }; }
   function accCleaned(c) {
@@ -2014,17 +1899,6 @@
     // fi.value='' 会把它当场清空，第一个 await 挂起期间列表就没了，
     // 异步回来继续迭代直接结束（实测：多选 15 个只导入第 1 个，且无报错）
     const list = Array.from(files || []);
-    const documents = list.filter(f => /\.(pdf|png|jpe?g|webp)$/i.test(f.name));
-    if (documents.length) {
-      if (documents.length !== list.length) { toast('请将图片 / PDF 与文字文件分开选择'); return; }
-      await DocImport.open(documents, async (text, name) => {
-        resetCleaned();
-        const n = await saveParsed(text, name);
-        if (n) { toast('已导入 ' + n + ' 题' + cleanedHint()); await renderHome(); }
-        return n;
-      }, saveImages);
-      return;
-    }
     let imported = 0, total = 0;
     const errBefore = errShown;
     resetCleaned();
@@ -2154,9 +2028,9 @@
   function importDropped(dt, into) {
     // into：'import' 走题库导入，'slice' 走切片导出
     safe(filesFromDataTransfer(dt).then(list => {
-      const ok = list.filter(f => (into === 'slice' ? /\.(md|markdown|txt|text)$/i : /\.(md|markdown|txt|text|pdf|png|jpe?g|webp)$/i).test(f.name));
+      const ok = list.filter(f => /\.(md|markdown|txt|text)$/i.test(f.name));
       if (ok.length) return into === 'slice' ? handleSliceFiles(ok) : handleFiles(ok);
-      toast(into === 'slice' ? '没找到 .md / .txt 文件' : '请选择文字、PDF、PNG、JPG 或 WebP 文件');
+      toast('没找到 .md / .txt 文件');
     }), '读取拖入文件失败');
   }
 
@@ -2299,10 +2173,6 @@
 
   // ---------- 事件绑定 ----------
   function bind() {
-    document.querySelectorAll('#reviewCardsBtns button, #chapterCardsBtns button').forEach(button => {
-      button.onclick = () => safe(openReviewCards(button.dataset.kind, button), '打开复习卡失败');
-    });
-    $('#lawCardsBtn').onclick = () => safe(openLawCards(), '打开框架卡失败');
     $('#backBtn').onclick = () => {
       if (S.back === 'bank') openBank(S.bank.id);
       else {                                   // v27 修复：题库页「‹ 首页」真的切回首页（原来只重渲列表没切视图）
@@ -2312,7 +2182,7 @@
       }
     };
     const fi = $('#fileInput');
-    $('#dropZone').onclick = (e) => { if (e.target !== fi) fi.click(); };
+    $('#dropZone').onclick = () => fi.click();
     // v18：先取快照再清 input —— value='' 会当场清空 FileList，
     // 异步导入循环回来就拿不到后面的文件（多选只剩第 1 个的根因）
     fi.onchange = () => {
@@ -2420,15 +2290,10 @@
       setSeg($('#packSeg'), SFX.getPack());
       const vibeOk = SFX.vibeSupported();
       $('#vibeField').classList.toggle('hidden', !vibeOk);
-      $('#vibeUnsupported').classList.toggle('hidden', vibeOk);
-      if (vibeOk) {
-        setSeg($('#vibeSeg'), SFX.getVibe() ? '1' : '0');
-        setSeg($('#vibeLevelSeg'), SFX.getVibeLevel());
-      }
+      if (vibeOk) setSeg($('#vibeSeg'), SFX.getVibe() ? '1' : '0');
       // v28：背景音乐段——开关 + 曲目下拉（内置 + 本地导入）
       if (window.BGM) {
         setSeg($('#bgmOnSeg'), BGM.enabled() ? '1' : '0');
-        setSeg($('#bgmVolSeg'), BGM.getVol());
         BGM.tracks().then(list => {
           const sel = $('#bgmTrack');
           sel.innerHTML = list.map(t => `<option value="${esc(t.id)}"${t.id === BGM.getTrack() ? ' selected' : ''}>${esc(t.label)}</option>`).join('');
@@ -2457,25 +2322,7 @@
     $('#vibeSeg').querySelectorAll('button').forEach(b => b.onclick = () => {
       SFX.setVibe(b.dataset.v === '1');
       $('#vibeSeg').querySelectorAll('button').forEach(x => x.classList.toggle('on', x === b));
-      if (SFX.getVibe()) SFX.previewVibe();
-    });
-    $('#vibeLevelSeg').querySelectorAll('button').forEach(b => b.onclick = () => {
-      SFX.setVibeLevel(b.dataset.v);
-      $('#vibeLevelSeg').querySelectorAll('button').forEach(x => x.classList.toggle('on', x === b));
-      SFX.previewVibe();
-    });
-    $('#vibePreview').onclick = () => {
-      if (!SFX.getVibe()) { toast('先开启震动'); return; }
-      SFX.previewVibe();
-      toast('已发送震动测试；静音／勿扰模式可能拦截');
-    };
-    $('#soundPreview').querySelectorAll('button').forEach(b => b.onclick = () => {
-      if (!SFX.enabled()) { toast('先开启音效'); return; }
-      SFX[b.dataset.sound]();
-    });
-    $('#bgmVolSeg').querySelectorAll('button').forEach(b => b.onclick = () => {
-      BGM.setVol(b.dataset.v);
-      $('#bgmVolSeg').querySelectorAll('button').forEach(x => x.classList.toggle('on', x === b));
+      if (SFX.getVibe()) SFX.done();        // 震动开关试一下收尾震感
     });
     // v28：背景音乐 —— 开关 / 选曲 / 导入本地音乐 / 删除
     $('#bgmOnSeg').querySelectorAll('button').forEach(b => b.onclick = () => {
@@ -2561,6 +2408,7 @@
     });
     $('#mixOrderSeg').querySelectorAll('button').forEach(b => b.onclick = () => {
       $('#mixOrderSeg').querySelectorAll('button').forEach(x => x.classList.toggle('on', x === b));
+      localStorage.setItem('ord-mix', b.dataset.v);   // v36：记住上次
     });
     $('#mixAll').onclick = () => {
       const boxes = Array.from($('#mixBanks').querySelectorAll('input'));
@@ -2659,21 +2507,6 @@
       localStorage.setItem('theme', cur);
       syncThemeColor();
     };
-    const syncSkin = () => {
-      const skin = document.documentElement.dataset.skin === 'atlas' ? 'atlas' : 'classic';
-      $('#skinOptions').querySelectorAll('button').forEach(b => {
-        b.classList.toggle('on', b.dataset.v === skin);
-        b.setAttribute('aria-pressed', String(b.dataset.v === skin));
-      });
-    };
-    $('#skinBtn').onclick = () => { syncSkin(); $('#skinModal').classList.remove('hidden'); };
-    $('#skinOptions').querySelectorAll('button').forEach(b => b.onclick = () => {
-      document.documentElement.dataset.skin = b.dataset.v;
-      try { localStorage.setItem('skin', b.dataset.v); } catch (_) { toast('当前浏览器无法保存外观偏好'); }
-      syncSkin();
-    });
-    $('#skinClose').onclick = () => $('#skinModal').classList.add('hidden');
-    $('#skinModal').onclick = e => { if (e.target === $('#skinModal')) $('#skinModal').classList.add('hidden'); };
   }
 
   // ---------- 启动 ----------

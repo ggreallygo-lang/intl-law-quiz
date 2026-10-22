@@ -449,7 +449,14 @@
    * @returns {Array<{qid,question,wrong,right,lastWrong,order,graduated}>}
    */
   const WRONG_GRAD_N = 2;
-  function wrongGradN() { return WRONG_GRAD_N; }
+  // v37：毕业标准可调（错题本头部 2/3/5 档），localStorage 'wrong-grad-n'；默认仍是 2
+  function wrongGradN() {
+    try {
+      const v = (typeof localStorage !== 'undefined') ? localStorage.getItem('wrong-grad-n') : null;
+      const n = parseInt(v || '', 10);
+      return (n === 2 || n === 3 || n === 5) ? n : WRONG_GRAD_N;
+    } catch (e) { return WRONG_GRAD_N; }
+  }
   function pickWrong(progs, opts) {
     const o = opts || {};
     const qmap = o.questionMap || null;
