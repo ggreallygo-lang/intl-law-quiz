@@ -1081,7 +1081,7 @@
       back = `<div class="def">${esc(q.definition) || '<span class="muted">（无定义）</span>'}</div>`;
     } else if (q.type === 'judge') {
       front = `<div class="tag">判断题</div><div class="stem">${esc(q.stem)}</div>`;
-      back = `<div class="def">答案：${q.answer ? '✓ 对' : '✗ 错'}</div>`;
+      back = ansBanner(q, null) + `<div class="def" style="font-size:15px">答案：${q.answer ? '✓ 对' : '✗ 错'}</div>`;
     } else {
       front = `<div class="tag">${TYPE_LABEL[q.type]}</div><div class="stem">${esc(q.stem)}</div>` +
         (q.options || []).map(o => `<div class="opt">${esc(o.key)}. ${esc(o.text)}</div>`).join('');
@@ -1432,7 +1432,9 @@
     else if (q.answer != null) keys = String(q.answer).replace(/[\s,，、]/g, '').split('');
     const badges = keys.map(k => '<span class="ans-key">' + esc(k) + '</span>').join('');
     const txt = (q.type === 'judge') ? '' : esc(Scoring.answerText(q));
-    return '<div class="ans-banner' + (right ? '' : ' bad') + '">' +
+    // v37.1 修：right=null（背题卡答案面）→ 绿色展示「正确答案」；
+    // 只有 right=false（确实答错了）才用红色 'bad'
+    return '<div class="ans-banner' + (right === false ? ' bad' : '') + '">' +
       (right ? '<span>✅ 答对</span>' : '<span>正确答案</span>') + badges +
       (txt && txt.length <= 90 ? '<span class="ans-txt">' + txt + '</span>' : '') + '</div>';
   }
