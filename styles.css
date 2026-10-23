@@ -1058,3 +1058,26 @@ body {
 /* ===== v37：错题本毕业标准档 ===== */
 .wb-grad-set { font-size: 12px; color: var(--muted); margin: 6px 0 2px; display: flex; align-items: center; gap: 4px; flex-wrap: wrap; }
 .wb-grad-set .wb-chip { padding: 2px 10px; font-size: 12px; }
+
+/* ===== v39.3：答完题后「下一题」吸底——不管解析多长按钮永远贴底可点 ===== */
+#nextWrap {
+  position: sticky;
+  bottom: 0;
+  background: var(--bg, #f5f2ec);
+  padding: 10px 0 14px;
+  z-index: 10;
+  margin-top: 10px;
+  border-top: 1px solid var(--line-soft, rgba(0,0,0,.06));
+}
+#nextWrap button { box-shadow: 0 -2px 12px rgba(0,0,0,.08); }
+[data-theme="dark"] #nextWrap { background: var(--bg, #1a1815); }
+
+/* 多选确认按钮也吸底 */
+#multiConfirm {
+  position: sticky;
+  bottom: 0;
+  z-index: 10;
+  background: var(--primary);
+  border-radius: 10px;
+  box-shadow: 0 -2px 12px rgba(0,0,0,.12);
+}

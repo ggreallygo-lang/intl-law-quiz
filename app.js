@@ -1219,7 +1219,8 @@
       $('#flipBtn').onclick = flip;
       $('#card').onclick = flip;
     }
-    startTimerChip(mem);           // v21：本轮用时 chip（回看也照常走会话计时）
+    startTimerChip(mem);
+    window.scrollTo({ top: 0 });   // v39.2           // v21：本轮用时 chip（回看也照常走会话计时）
     const rateCard = async (qv) => {
       if (mem.locked) return;              // v14：写库期间锁点击，防连点跳两题
       mem.locked = true;
@@ -1356,6 +1357,7 @@
       const pb2 = $('#prevQBtn2');
       if (pb2) pb2.onclick = () => { prac.locked = false; prac.i--; renderPractice(); };
       startTimerChip(prac);
+    window.scrollTo({ top: 0 });   // v39.2
       return;
     }
 
@@ -1383,7 +1385,7 @@
         <div class="option" data-v="0"><span class="key">✗</span> 错</div>`;
     } else {
       // v39 用户需求：选项乱序=内容在 ABCD 位置间打乱（key 跟着走）；固定=保持原序
-      const wantShuffle = localStorage.getItem('opt-shuffle') !== '0';
+      const wantShuffle = localStorage.getItem('opt-shuffle') === '1';
       const opts = wantShuffle ? shuffle(q.options || []) : (q.options || []).slice();
       body = `<div class="q-stem"><span class="qnum">${TYPE_LABEL[q.type]} ${prac.i + 1}/${total}</span>${esc(q.stem)}</div>` +
         opts.map(o => `<div class="option" data-k="${o.key}"><span class="key">${o.key}</span> ${esc(o.text)}</div>`).join('');
@@ -1600,6 +1602,9 @@
     saveResume('practice', prac);  // v38 #5：提交后立即更新快照
     // 先让用户可以继续，再写库 —— 存储失败绝不能把人卡死在这一题
     $('#nextWrap').classList.remove('hidden');
+    // v39.3：答完自动滚到「下一题」按钮可见位置（不用手动下滑找按钮）
+    const nwEl = $('#nextWrap');
+    if (nwEl) nwEl.scrollIntoView({ behavior: 'smooth', block: 'end' });
     $('#skipBtn').classList.add('hidden');
     $('#nextBtn').textContent = prac.i + 1 >= prac.list.length ? '查看结果 ›' : '下一题 ›';
     // v14：锁一下，避免连点"下一题"跳掉两题
@@ -1773,7 +1778,7 @@
         <input type="text" id="fillInput" class="fill-input" value="${esc(saved)}" placeholder="输入答案（回车跳下一题）" autocomplete="off" />`;
     } else {
       // v39 用户需求：选项乱序=内容在 ABCD 位置间打乱（key 跟着走）；固定=保持原序
-      const wantShuffle = localStorage.getItem('opt-shuffle') !== '0';
+      const wantShuffle = localStorage.getItem('opt-shuffle') === '1';
       const opts = wantShuffle ? shuffle(q.options || []) : (q.options || []).slice();
       body = `<div class="q-stem"><span class="qnum">${timerHtml}${TYPE_LABEL[q.type]} ${exam.i + 1}/${total}</span>${esc(q.stem)}</div>` +
         opts.map(o => `<div class="option" data-k="${o.key}"><span class="key">${o.key}</span> ${esc(o.text)}</div>`).join('');
@@ -2566,7 +2571,7 @@
     });
     // v39：选项乱序开关
     const syncOptShuffle = () => {
-      const cur = localStorage.getItem('opt-shuffle') || '1';
+      const cur = localStorage.getItem('opt-shuffle') || '0';
       $('#optShuffleSeg').querySelectorAll('button').forEach(b => b.classList.toggle('on', b.dataset.v === cur));
     };
     syncOptShuffle();
