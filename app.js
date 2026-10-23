@@ -126,6 +126,7 @@
     safe(renderHomeStats(), '加载统计失败');   // 统计卡并行加载，不阻塞题库列表
     safe(renderExamCard(), '加载考试计划失败'); // v27：倒计时/目标卡并行加载
     refreshResumeBar();                         // v37.3：首页也显示恢复条（跨库/单库）
+    safe(renderStudyReport(), '加载学习报告失败');
     const list = $('#bankList');
     if (!banks.length) {
       list.innerHTML = '<div class="empty">还没有题库，导入一个 .md / .txt 开始吧 👆</div>';
@@ -310,6 +311,66 @@
   // 容错口径：文档强调「推荐写法+自动容错」，不是要求一字不差（用户明确要求）
   const CLEAN_RULES_MD = "# LEXA 题库导入规范（清洗规则·容错版 v2）\n\n> 写给 AI 或人工：把脏资料（Word/PDF/网页/笔记）整理成 LEXA 刷题 App 可导入的 Markdown。\n> **先说结论：App 的解析器有五层自动清洗和容错，以下都是「推荐写法」而非硬性要求——\n> 大方向对了就能导入，细节 App 会自动兜底。** 只有第三节的两条是硬性的。\n\n## 一、App 会自动容错的事（你不用操心）\n\n1. **水印/推广自动删**：公众号、微信号、扫码关注、更多资料、免费领取、QQ群等\n   整行自动剥离；标题尾部括号里的水印片段自动剪掉。\n2. **页眉页脚自动删**：「国际法试题 第1页(共5页)」这类短行。\n3. **考卷套话自动删**：「绝密★启用前」「注意事项：」等。\n4. **行内选项自动拆**：「A.北京 B.上海 C.广州 答案B」挤在一行也能识别。\n5. **卷尾答案自动回填**：试卷末尾集中答案区（「1.B 2.AC 3.对」）按题号自动配对。\n6. **格式随意**：CRLF/LF 换行、全角半角标点、题号 1. / 1、/ 1． / 一、 / １. 都行\n   （全角数字和字母自动归一）；选项键大小写随意（自动转大写并校验连续性）。\n7. **缺答案不丢题**：没识别到答案的题保留并标「⚠️ 没识别到答案」，可在 App 内\n   点 ✏️ 补上——所以**宁缺答案也不要编造答案**。\n8. **多级章节自动建树**：## ### #### 任意层级，背题卡自动带章节路径。\n9. **话术问答体直接导入（v2 新增）**：「1. 旅客：在哪里打车？/ 回答：您好……」\n   这种带编号的问答，**原样粘贴即可**，「回答：」自动识别为答案行。\n10. **无编号问答自动切题（v2 新增）**：整篇没有题号、只有「旅客：…/回答：…」\n    或「问：…/答：…」「Q:/A:」的访谈/话术原稿，App 自动按问答对切题加编号。\n\n## 二、推荐写法（六种题型，照抄结构即可）\n\n### 单选题 / 多选题（自动识别）\n1. 题干文字\n   A. 选项一\n   B. 选项二\n   C. 选项三\n   D. 选项四\n   答案：A\n\n（多选写「答案：ABC」；选项分行或挤一行都行。）\n\n### 判断题\n1. 题干陈述句\n   答案：对\n\n（对/错、正确/错误、√/×、T/F 都认。）\n\n### 填空题\n1. 《联合国宪章》第2条规定了（　）项原则。\n   答案：7\n\n（或直接写「……规定了（7）项原则。」；含「共N分/本大题/每小题/答题卡」的\n括号是试卷套话，自动忽略。）\n\n### 名词解释（翻卡：正面术语/背面定义）\n1. 领海：国家主权及于其陆地领土及内水以外邻接的领海……\n\n### 简答题 / 论述 / 背书问答（自评卡：先想后翻，背话术最合适）\n1. 旅客：我在这里打车，车会上来接我吗？\n   答案：您好，您可以联系司机确认……（完整话术，可多行多段）\n\n（「回答：」「答：」都行；分支情况用【】标记写进答案，如\n【如遇旅客不清楚航班】您好，……）\n\n## 三、仅有的两条硬性要求\n\n1. **纯文本 Markdown、UTF-8 编码**（Word 另存 .txt/.md 或直接粘贴文本；\n   App 不解析图片、表格、公式——转成文字描述或删除）。\n2. **题与题之间要有可切分的边界**：编号 / 问答对（旅客：/问：/Q:）二者必有其一。\n   既没编号又不是问答体的无结构大段文字，会被当成名词解释或忽略——这是唯一\n   会丢内容的坑（保底办法：给每题加个 1. 2. 3. 编号即可）。\n\n## 四、清洗源头时建议顺手做的（不做 App 也会兜）\n\n- 删掉图片/表格/公式。\n- 修正明显 OCR 乱码（同音字、断行断字）。\n- 段落按题目断行，别整篇连一行。\n\n## 五、交付自检（30 秒）\n\n- 导入后 App 首页题数 ≈ 你整理的题数（差几道去查边界缺失）。\n- 点开题库没有大片「⚠️ 没识别到答案」。\n- 目录树层级符合预期。\n\n（本规范由 LEXA App 导出生成，与当前版本解析引擎一致；解析器持续增强容错，\n新格式建议先小样试导。）\n";
 
+
+  // ---------- v40：学习报告（首页周报卡） ----------
+  async function renderStudyReport() {
+    const box = $('#studyReport'); if (!box) return;
+    const sess = (await DB.listSessions()) || [];
+    if (!sess.length) { box.classList.add('hidden'); return; }
+    const now = Date.now(), WEEK = 7 * 86400000;
+    const tw_sess = sess.filter(x => x && !x.voided && x.ts > now - WEEK);
+    const lw_sess = sess.filter(x => x && !x.voided && x.ts > now - 2 * WEEK && x.ts <= now - WEEK);
+    const tw = DB.aggTotals(tw_sess), lw = DB.aggTotals(lw_sess);
+    const twG = tw_sess.filter(x => x.right !== undefined);
+    const acc = twG.length ? Math.round(twG.filter(x => x.right).length / twG.length * 100) : 0;
+    const lwG = lw_sess.filter(x => x.right !== undefined);
+    const lwAcc = lwG.length ? Math.round(lwG.filter(x => x.right).length / lwG.length * 100) : 0;
+    const dAcc = acc - lwAcc, dCnt = tw.count - lw.count;
+    const timeStr = tw.ms > 3600000 ? Math.floor(tw.ms / 3600000) + 'h' + Math.round(tw.ms % 3600000 / 60000) + 'm' : Math.round(tw.ms / 60000) + '分钟';
+    // 近7天正确率柱状
+    const days = DB.dailyCounts(tw_sess, 7);
+    const bars = days.map(d => {
+      const dg = tw_sess.filter(x => x.right !== undefined && DB.dayKey(x.ts) === d.key);
+      const da = dg.length ? Math.round(dg.filter(x => x.right).length / dg.length * 100) : 0;
+      const h = Math.max(4, Math.round(da / 100 * 40));
+      const c = da >= 80 ? '#4caf50' : da >= 50 ? '#f59e0b' : '#f44336';
+      return '<span title="' + d.key + '：' + da + '%(' + d.count + '题)" style="width:12px;height:' + h + 'px;background:' + c + ';border-radius:3px;flex-shrink:0"></span>';
+    }).join('');
+    box.innerHTML =
+      '<div style="font-weight:700;font-size:14px;margin-bottom:8px">📋 本周学习报告</div>' +
+      '<div style="display:flex;gap:14px;font-size:13px;flex-wrap:wrap">' +
+      '<span>做题 <b style="color:var(--primary)">' + tw.count + '</b>' + (dCnt !== 0 ? '<small style="color:' + (dCnt > 0 ? '#4caf50' : '#f44336') + '">' + (dCnt > 0 ? '+' : '') + dCnt + '</small>' : '') + '</span>' +
+      '<span>正确率 <b style="color:' + (acc >= 70 ? '#4caf50' : acc >= 50 ? '#f59e0b' : '#f44336') + '">' + acc + '%</b>' + (dAcc !== 0 ? '<small style="color:' + (dAcc > 0 ? '#4caf50' : '#f44336') + '">' + (dAcc > 0 ? '+' : '') + dAcc + '%</small>' : '') + '</span>' +
+      '<span>投入 ' + timeStr + '</span></div>' +
+      '<div style="display:flex;gap:4px;align-items:flex-end;margin-top:10px;height:44px">' + bars + '</div>' +
+      '<div style="font-size:11px;color:var(--muted);margin-top:4px">近7天正确率</div>';
+    box.classList.remove('hidden');
+  }
+  // ---------- v40：考前冲刺（错题+到期+抽查合并智能队列） ----------
+  async function startSprint() {
+    const progs = await DB.listProgress(S.bank.id);
+    const map = {}; progs.forEach(p => map[p.qid] = p);
+    const now = Date.now();
+    const gradN = DB.wrongGradN();
+    const wrongQs = [], dueQs = [], sampleQs = [];
+    S.questions.forEach(q => {
+      const p = map[q.id];
+      if (!p) return;
+      const w = (p.practice ? p.practice.wrong : 0) + (p.exam ? p.exam.wrong : 0);
+      const isWrong = w > 0 && !p.wrongDismissed && (p.wrongStreak || 0) < gradN;
+      const isDue = p.inSrs && p.due <= now;
+      const isSample = !p.inSrs && p.enrollment === 'sampling' && p.due <= now;
+      if (isWrong) wrongQs.push(q);
+      else if (isDue) dueQs.push(q);
+      else if (isSample) sampleQs.push(q);
+    });
+    const pool = shuffle(wrongQs).concat(shuffle(dueQs)).concat(shuffle(sampleQs));
+    if (!pool.length) { toast('当前没有需要冲刺的题'); return; }
+    S.pool = pool; S.mixed = false;
+    const label = [wrongQs.length ? '错题' + wrongQs.length : '', dueQs.length ? '到期' + dueQs.length : '', sampleQs.length ? '抽查' + sampleQs.length : ''].filter(Boolean).join('+');
+    startPractice({ title: '🏃冲刺(' + label + ')', order: 'rand' });
+  }
+
   // ---------- v31：跨库刷题（多题库混合 + 题型筛选） ----------
   const MIX_TYPE_SETS = { choice: ['single', 'multiple'], judge: ['judge'], essay: ['essay', 'term', 'fill'] };
   function openHomeView() {                   // 跨库刷题结束回首页（没有具体题库可回）
@@ -459,6 +520,30 @@
     await safe(refreshWrongCount(), '加载错题数失败');
     safe(refreshWeakEntry(), '加载弱项统计失败');
     safe(renderOutlineTree(), '加载目录失败');
+    // v40：冲刺提示
+    (async () => {
+      try {
+        const progs2 = await DB.listProgress(bank.id);
+        const now2 = Date.now();
+        const gn = DB.wrongGradN();
+        let wr = 0, du = 0, sa = 0;
+        progs2.forEach(p => {
+          if (!p) return;
+          const w = (p.practice ? p.practice.wrong : 0) + (p.exam ? p.exam.wrong : 0);
+          if (w > 0 && !p.wrongDismissed && (p.wrongStreak || 0) < gn) wr++;
+          else if (p.inSrs && p.due <= now2) du++;
+          else if (!p.inSrs && p.enrollment === 'sampling' && p.due <= now2) sa++;
+        });
+        const hint = $('#sprintHint');
+        if (hint) {
+          const parts = [];
+          if (wr) parts.push('错题' + wr);
+          if (du) parts.push('到期' + du);
+          if (sa) parts.push('抽查' + sa);
+          hint.textContent = parts.length ? parts.join(' + ') + ' 待冲刺' : '暂无待冲刺题';
+        }
+      } catch (e) {}
+    })();
     renderQuestionList('');
     // 模式卡片 -> 先选范围
     document.querySelectorAll('#view-bank .mode-card').forEach(c => {
@@ -818,6 +903,7 @@
       html += `<div class="wb-actions">` +
         `<button class="btn" id="wbPractice"${items.length ? '' : ' disabled'}>✍️ 刷错题</button>` +
         `<button class="btn secondary" id="wbMemorize"${items.length ? '' : ' disabled'}>🃏 背错题</button>` +
+        `<button class="btn secondary" id="wrongExport">📤 导出</button>` +
         `</div>`;
     }
     // v30：历史记录行——错/对次数、连对进度、最近答错时间，一眼看清这道题的过往
@@ -899,6 +985,43 @@
     await safe(refreshWrongCount(), '刷新错题数失败');
   }
 
+
+  // v40：模拟考试历史趋势
+  function renderMockHistory() {
+    try {
+      const hist = JSON.parse(localStorage.getItem('mock-history') || '[]');
+      if (hist.length < 2) return '';
+      const last5 = hist.slice(-5);
+      const bars = last5.map(h => {
+        const pct = h.total ? Math.round(h.correct / h.total * 100) : 0;
+        const bh = Math.max(6, Math.round(pct / 100 * 60));
+        const c = pct >= 80 ? '#4caf50' : pct >= 60 ? '#f59e0b' : '#f44336';
+        const label = new Date(h.date).toLocaleDateString().slice(5);
+        return '<div style="display:flex;flex-direction:column;align-items:center;gap:2px"><span style="font-size:10px;color:var(--muted)">' + label + '</span><div style="width:22px;height:' + bh + 'px;background:' + c + ';border-radius:4px"></div><span style="font-size:12px;font-weight:700">' + pct + '</span></div>';
+      }).join('');
+      return '<div style="display:flex;align-items:flex-end;gap:10px;justify-content:center;margin:14px 0;padding:12px;background:var(--surface);border-radius:12px;border:1px solid var(--line)"><div style="display:flex;gap:8px;align-items:flex-end">' + bars + '</div></div>';
+    } catch (e) { return ''; }
+  }
+
+  // v40：导出错题本为 .md
+  async function exportWrongBook() {
+    const active = DB.pickWrong(wb.progs, { questionMap: wb.qmap });
+    const grad = DB.pickWrong(wb.progs, { questionMap: wb.qmap, graduated: true });
+    const items = active.concat(grad);
+    if (!items.length) { toast('错题本是空的'); return; }
+    let md = '# 错题本导出(' + items.length + '题)\n\n> 导出:' + new Date().toLocaleString() + '\n> 进行中' + active.length + '题 已毕业' + grad.length + '题\n\n';
+    items.forEach((it, i) => {
+      const q = it.question;
+      md += '## ' + (i + 1) + '. ' + (q.stem || q.term || '') + '\n\n';
+      if (q.options && q.options.length) q.options.forEach(o => { md += o.key + '. ' + o.text + '\n'; });
+      if (q.type === 'judge') md += '答案：' + (q.answer ? '对' : '错') + '\n';
+      else if (q.answer) md += '答案：' + (Array.isArray(q.answer) ? q.answer.join('') : q.answer) + '\n';
+      if (q.explanation) md += '\n解析：' + q.explanation + '\n';
+      md += '\n--- 错' + it.wrong + '次 对' + it.right + '次' + (it.graduated ? ' 已毕业' : '') + ' ---\n\n';
+    });
+    downloadText('错题本-' + new Date().toISOString().slice(0, 10) + '.md', md);
+    toast('已导出' + items.length + '题错题');
+  }
   // ---------- F18：弱项专项包 ----------
   // 组卷规则全在 DB.weakPack（纯函数、单测覆盖）；这里只负责取进度、说人话、进刷题流程。
   const WEAK_TOTAL = 20;
@@ -1156,7 +1279,7 @@
       `<div class="flip3d" id="card">` +
         `<div class="flip3d-inner">` +
           `<div class="flip-face flip-front">${chapterLine}${front}</div>` +
-          `<div class="flip-face flip-back">${chapterLine}<div class="tag">答案</div>${stemMini}${back}</div>` +
+          `<div class="flip-face flip-back">${chapterLine}<div class="tag">答案</div>${stemMini}${back}${aiButtons(q, 'memorize')}</div>` +
         `</div>` +
       `</div>` +
       `<div class="flip-hint" id="flipHint">点击卡片或下方按钮翻面看答案</div>` +
@@ -1575,6 +1698,90 @@
       (txt && txt.length <= 90 ? '<span class="ans-txt">' + txt + '</span>' : '') + '</div>';
   }
 
+
+  // ---------- v41：AI 助手 ----------
+  function aiAvailable() { return typeof AI !== 'undefined' && AI.hasKey(); }
+  function aiButtons(q, mode) {
+    if (!aiAvailable()) return '';
+    var btns = '';
+    if (mode === 'practice') {
+      btns += '<button class="ai-btn" data-ai="explain" data-qid="' + esc(q.id) + '">🧠 解析</button>';
+    }
+    btns += '<button class="ai-btn" data-ai="mnemonic" data-qid="' + esc(q.id) + '">💡 巧计</button>';
+    btns += '<button class="ai-btn" data-ai="related" data-qid="' + esc(q.id) + '">🔗 关联</button>';
+    return '<div class="ai-btn-row">' + btns + '</div><div id="aiResult" class="ai-result hidden"></div>';
+  }
+  function showAiResult(title, content, relatedItems) {
+    var el = $('#aiResult');
+    if (!el) return;
+    var html = '<div class="ai-result-card"><div class="ai-result-title">' + esc(title) + '</div><div class="ai-result-body">' + esc(content).split(chr(10)).join('<br>') + '</div>';
+    if (relatedItems && relatedItems.length) {
+      html += '<div class="ai-related-list"><div style="font-weight:700;font-size:13px;margin:8px 0 4px">🔗 关联题（点击跳转）：</div>';
+      relatedItems.forEach(function (item) {
+        html += '<button class="ai-related-item" data-jump="' + esc(item.q.id) + '">' + esc((item.q.stem || item.q.term || '').slice(0, 36)) + '…</button>';
+      });
+      html += '</div>';
+    }
+    html += '</div>';
+    el.innerHTML = html;
+    el.classList.remove('hidden');
+    el.querySelectorAll('[data-jump]').forEach(function (btn) {
+      btn.onclick = function () {
+        var tid = btn.dataset.jump;
+        if (prac && prac.list) {
+          var idx = prac.list.findIndex(function (x) { return x.id === tid; });
+          if (idx >= 0) { prac.i = idx; renderPractice(); }
+          else {
+            var tq = S.questions.find(function (x) { return x.id === tid; });
+            if (tq) { prac.list.splice(prac.i + 1, 0, tq); toast('已插入，下一题可见'); }
+          }
+        }
+      };
+    });
+  }
+  function handleAiClick(type, qid) {
+    var q = S.questions.find(function (x) { return x.id === qid; }) || (prac && prac.list || []).find(function (x) { return x.id === qid; });
+    if (!q) return;
+    var el = $('#aiResult');
+    if (el) { el.classList.remove('hidden'); el.innerHTML = '<div style="text-align:center;padding:16px;color:var(--muted)">🤔 AI 思考中…</div>'; }
+    if (type === 'explain') {
+      AI.explain(q).then(function (t) { showAiResult('🧠 AI 解析', t); })
+        .catch(function (e) { showAiResult('❌', e.message); });
+    } else if (type === 'mnemonic') {
+      AI.mnemonic(q).then(function (t) { showAiResult('💡 巧计', t); })
+        .catch(function (e) { showAiResult('❌', e.message); });
+    } else if (type === 'related') {
+      AI.searchRelated(q, S.questions).then(function (r) {
+        showAiResult('🔗 关联题（' + r.keywords.join('、') + '）', r.items.length ? '找到 ' + r.items.length + ' 道：' : '没有找到紧密关联的题。', r.items);
+      }).catch(function (e) { showAiResult('❌', e.message); });
+    }
+  }
+  function openAiChat() {
+    $('#aiChatModal').classList.remove('hidden');
+    var log = $('#aiChatLog');
+    if (!log.children.length) log.innerHTML = '<div class="ai-msg ai-msg-bot">你好！有什么法律概念不懂的随时问 👋</div>';
+    $('#aiChatInput').focus();
+  }
+  function sendAiChat() {
+    var input = $('#aiChatInput');
+    var msg = input.value.trim();
+    if (!msg) return;
+    input.value = '';
+    var log = $('#aiChatLog');
+    log.insertAdjacentHTML('beforeend', '<div class="ai-msg ai-msg-user">' + esc(msg) + '</div>');
+    log.insertAdjacentHTML('beforeend', '<div class="ai-msg ai-msg-bot" id="aiThink">🤔 思考中…</div>');
+    log.scrollTop = log.scrollHeight;
+    var ctx = (prac && prac.list && prac.list[prac.i]) || (mem && mem.list && mem.list[mem.i]) || null;
+    AI.tutor(msg, ctx).then(function (r) {
+      var t = $('#aiThink');
+      if (t) t.outerHTML = '<div class="ai-msg ai-msg-bot">' + esc(r).split(String.fromCharCode(10)).join('<br>') + '</div>';
+      log.scrollTop = log.scrollHeight;
+    }).catch(function (e) {
+      var t = $('#aiThink');
+      if (t) t.outerHTML = '<div class="ai-msg ai-msg-bot">❌ ' + esc(e.message) + '</div>';
+    });
+  }
+
   async function finishPractice(q, right, picked) {
     // v38 #4：幂等——同一题本轮只允许一次有效提交（双击/回看/异步竞态全挡住）
     if (prac.results[prac.i] && prac.results[prac.i] !== 'skip') return;
@@ -1588,6 +1795,7 @@
     if (!Scoring.hasAnswer(q)) {
       html += `<div class="muted" style="margin-top:6px;font-size:13px">⚠️ 这道题没识别到答案，已按「答错」计，建议导出后手工补上</div>`;
     }
+    html += aiButtons(q, 'practice');
     fb.innerHTML = html;
     if (right) prac.correct++; else prac.wrongIds.push(q.id);
     // v28：记作答记录（回看用）；回看补答跳过的题要把它从跳过清单里捞回来
@@ -1873,6 +2081,7 @@
     });
     view.innerHTML =
       `<div class="result-score">${score}</div><div class="result-sub">得分 ${correct} / ${total} · 答题用时 ${fmtElapsed(usedMs)}</div>` +
+      renderMockHistory() +
       (noAns.length ? `<div class="muted" style="text-align:center;margin:10px 0;font-size:13px">⚠️ 有 ${noAns.length} 道题没识别到答案，已按答错计</div>` : '') +
       (chapterHtml ? `<h3 style="font-size:15px">章节正确率</h3>${chapterHtml}` : '') +
       (wrongList.length ? `<h3 style="font-size:15px;margin-top:18px">错题回顾（${wrongList.length}）</h3>${wrongHtml}` : '<div class="empty">满分，牛！</div>') +
@@ -1886,6 +2095,12 @@
     // v27：整卷模拟 +1（考试计划「冲刺」目标口径，v27 起累计）
     safe((async () => {
       await DB.setMeta('mockCount', ((await DB.getMeta('mockCount')) || 0) + 1);
+      try {
+        const hist = JSON.parse(localStorage.getItem('mock-history') || '[]');
+        hist.push({ date: Date.now(), score: score, correct: correct, total: total });
+        if (hist.length > 20) hist.shift();
+        localStorage.setItem('mock-history', JSON.stringify(hist));
+      } catch (e) {}
     })(), '记录模拟次数失败');
   }
 
@@ -2667,6 +2882,47 @@
     });
     $('#goalModalClose').onclick = () => $('#goalModal').classList.add('hidden');
     $('#goalModal').onclick = (e) => { if (e.target === $('#goalModal')) $('#goalModal').classList.add('hidden'); };
+    // v41：AI 事件
+    document.addEventListener('click', function (e) {
+      var btn = e.target.closest('.ai-btn');
+      if (btn) handleAiClick(btn.dataset.ai, btn.dataset.qid);
+    });
+    const aiF = $('#aiFloatBtn');
+    if (aiF) {
+      aiF.onclick = openAiChat;
+      if (typeof AI !== 'undefined' && AI.hasKey()) aiF.classList.remove('hidden');
+    }
+    const acc = $('#aiChatClose'); if (acc) acc.onclick = () => $('#aiChatModal').classList.add('hidden');
+    const acm = $('#aiChatModal'); if (acm) acm.onclick = (e) => { if (e.target === acm) acm.classList.add('hidden'); };
+    const acs = $('#aiChatSend'); if (acs) acs.onclick = sendAiChat;
+    const aci = $('#aiChatInput'); if (aci) aci.onkeydown = (e) => { if (e.key === 'Enter') sendAiChat(); };
+    const aiKI = $('#aiKeyInput');
+    if (aiKI) {
+      aiKI.value = AI.getKey();
+      const syncSt = () => {
+        const st = $('#aiStatus');
+        if (AI.hasKey()) { st.textContent = '✅ 已配置（' + AI.getModel() + '）'; st.style.color = 'green'; aiF && aiF.classList.remove('hidden'); }
+        else { st.textContent = '未配置'; st.style.color = ''; aiF && aiF.classList.add('hidden'); }
+      };
+      syncSt();
+      $('#aiSaveBtn').onclick = () => { AI.setKey(aiKI.value); syncSt(); toast(AI.hasKey() ? '已保存' : 'Key 为空'); };
+      $('#aiTestBtn').onclick = () => {
+        AI.setKey(aiKI.value); syncSt();
+        if (!AI.hasKey()) { toast('请先填 Key'); return; }
+        const b = $('#aiTestBtn'); b.textContent = '测试中…'; b.disabled = true;
+        AI.testConnection().then(() => { b.textContent = '✅ 成功'; b.disabled = false; setTimeout(() => b.textContent = '测试连接', 2000); })
+          .catch(e => { b.textContent = '❌ ' + (e.message || '').slice(0, 12); b.disabled = false; setTimeout(() => b.textContent = '测试连接', 3000); });
+      };
+      $('#aiModelSeg').querySelectorAll('button').forEach(b => b.onclick = () => {
+        $('#aiModelSeg').querySelectorAll('button').forEach(x => x.classList.toggle('on', x === b));
+        AI.setModel(b.dataset.v); syncSt();
+      });
+    }
+
+    const spBtn = $('#sprintBtn');
+    if (spBtn) spBtn.onclick = () => safe(startSprint(), '冲刺失败');
+    const wExp = $('#wrongExport');
+    if (wExp) wExp.onclick = () => safe(exportWrongBook(), '导出错题失败');
     // v31：跨库刷题弹层
     $('#mixEntry').onclick = () => safe(openMixModal(), '打开跨库刷题失败');
     $('#mixTypeSeg').querySelectorAll('button').forEach(b => b.onclick = () => {

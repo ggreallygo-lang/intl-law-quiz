@@ -1081,3 +1081,65 @@ body {
   border-radius: 10px;
   box-shadow: 0 -2px 12px rgba(0,0,0,.12);
 }
+
+/* ===== v40：冲刺卡 + 学习报告 ===== */
+.sprint-card {
+  display: flex; align-items: center; gap: 12px;
+  background: var(--surface); border: 2px solid var(--primary);
+  border-radius: 14px; padding: 14px 16px; margin-bottom: 14px;
+  cursor: pointer; transition: transform .1s;
+}
+.sprint-card:active { transform: scale(.98); }
+.study-report {
+  background: var(--surface); border: 1px solid var(--line);
+  border-radius: 14px; padding: 14px 16px; margin-bottom: 12px;
+}
+
+/* ===== v41：AI 助手 ===== */
+.ai-btn-row { display: flex; gap: 8px; margin-top: 10px; flex-wrap: wrap; }
+.ai-btn {
+  border: 1px solid var(--primary); background: var(--surface); color: var(--primary);
+  padding: 6px 14px; border-radius: 18px; font-size: 13px; font-weight: 600;
+  cursor: pointer; transition: all .15s;
+}
+.ai-btn:active { transform: scale(.95); background: var(--primary); color: #fff; }
+.ai-result { margin-top: 10px; }
+.ai-result-card {
+  background: var(--surface); border: 1px solid var(--primary); border-radius: 12px;
+  padding: 14px; font-size: 14px; line-height: 1.6;
+}
+.ai-result-title { font-weight: 700; color: var(--primary); margin-bottom: 8px; font-size: 14px; }
+.ai-result-body { white-space: pre-wrap; word-break: break-all; }
+.ai-related-list { margin-top: 10px; border-top: 1px dashed var(--line); padding-top: 8px; }
+.ai-related-item {
+  display: block; width: 100%; text-align: left; border: 1px solid var(--line);
+  background: var(--surface); padding: 8px 12px; border-radius: 8px; margin: 4px 0;
+  font-size: 13px; cursor: pointer; color: var(--text);
+}
+.ai-related-item:active { background: var(--primary); color: #fff; }
+.ai-related-score {
+  display: inline-block; min-width: 20px; height: 20px; line-height: 20px;
+  background: var(--primary); color: #fff; border-radius: 4px; text-align: center;
+  font-size: 11px; font-weight: 700; margin-right: 6px;
+}
+/* AI 答疑浮动按钮 */
+.ai-float {
+  position: fixed; right: 16px; bottom: 80px; z-index: 50;
+  width: 48px; height: 48px; border-radius: 50%;
+  background: var(--primary); color: #fff; font-size: 22px;
+  display: flex; align-items: center; justify-content: center;
+  cursor: pointer; box-shadow: 0 4px 16px rgba(0,0,0,.2);
+  transition: transform .15s;
+}
+.ai-float:active { transform: scale(.9); }
+[data-theme="dark"] .ai-float { background: #4a9eff; }
+/* AI 对话 */
+.ai-chat-card { max-height: 80vh; display: flex; flex-direction: column; }
+.ai-chat-log {
+  flex: 1; overflow-y: auto; max-height: 50vh; min-height: 120px;
+  padding: 8px; background: var(--seg-bg, #f5f5f5); border-radius: 10px;
+}
+.ai-msg { margin: 6px 0; padding: 8px 12px; border-radius: 12px; font-size: 14px; line-height: 1.5; max-width: 85%; }
+.ai-msg-bot { background: var(--surface); border: 1px solid var(--line); }
+.ai-msg-user { background: var(--primary); color: #fff; margin-left: auto; }
+.ai-msg-err { color: #f44336; }

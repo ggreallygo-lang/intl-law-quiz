@@ -38,6 +38,8 @@
     <div id="examCard" class="exam-card hidden"></div>
     <!-- F2：全站累计统计卡（题数/时长/连续打卡），由 renderHomeStats 填充 -->
     <div id="homeStats" class="home-stats hidden"></div>
+    <!-- v40：学习报告 -->
+    <div id="studyReport" class="study-report hidden"></div>
     <div class="seg" id="importSeg" style="margin-bottom:14px">
       <button data-v="file" class="on">📂 选择文件</button>
       <button data-v="paste">📋 粘贴文本</button>
@@ -106,6 +108,16 @@
       <span>🎯 弱项专项包</span>
       <span class="wb-entry-right"><b id="weakEntryAcc"></b><span class="muted" id="weakEntryHint">算一算…</span></span>
     </button>
+
+    <!-- v40：考前冲刺——一键合并错题+到期+抽查 -->
+    <div class="sprint-card" id="sprintBtn">
+      <span style="font-size:24px">🏃</span>
+      <div style="flex:1">
+        <b style="font-size:14px">考前冲刺</b>
+        <div class="muted" style="font-size:12px" id="sprintHint">错题+到期+抽查 合并刷</div>
+      </div>
+      <span style="color:var(--primary);font-size:18px">›</span>
+    </div>
 
     <div class="mode-grid">
       <div class="mode-card" data-mode="memorize">
@@ -225,6 +237,19 @@
         <input type="file" id="bgmFile" accept="audio/*" class="hidden">
         <div class="muted" style="font-size:12px;margin-top:4px">支持 mp3 / m4a / ogg / wav，存在本机不联网</div>
       </div>
+      <!-- v41：AI 助手设置 -->
+      <div class="field"><label>🤖 AI 助手（可选增强）</label>
+        <input type="text" id="aiKeyInput" placeholder="粘贴智谱 API Key（bigmodel.cn 免费注册）" style="margin-top:4px" autocomplete="off">
+        <div class="seg" id="aiModelSeg" style="margin-top:6px">
+          <button data-v="glm-4-flash" class="on">Flash（免费）</button><button data-v="glm-4">GLM-4（更强）</button>
+        </div>
+        <div style="display:flex;gap:8px;margin-top:8px">
+          <button class="btn secondary" id="aiTestBtn" style="flex:1">测试连接</button>
+          <button class="btn secondary" id="aiSaveBtn" style="flex:1">保存 Key</button>
+        </div>
+        <div class="muted" style="font-size:12px;margin-top:4px" id="aiStatus">未配置</div>
+      </div>
+
       <!-- v39：选项乱序开关（用户要求可切换：乱序/原序） -->
       <div class="field"><label>选项乱序（内容在 ABCD 位置间打乱）</label>
         <div class="seg" id="optShuffleSeg">
@@ -329,6 +354,22 @@
     </div>
   </div>
 
+  <!-- v41：AI 答疑浮动按钮 -->
+  <div id="aiFloatBtn" class="ai-float hidden" title="问 AI">💬</div>
+
+  <!-- v41：AI 答疑对话弹层 -->
+  <div class="modal-mask hidden" id="aiChatModal">
+    <div class="modal-card ai-chat-card">
+      <h3>💬 AI 答疑</h3>
+      <div id="aiChatLog" class="ai-chat-log"></div>
+      <div style="display:flex;gap:8px;margin-top:10px">
+        <input type="text" id="aiChatInput" placeholder="问法律概念/法条/解题技巧…" style="flex:1" autocomplete="off">
+        <button class="btn" id="aiChatSend">发送</button>
+      </div>
+      <button class="btn ghost" id="aiChatClose" style="margin-top:8px">关闭</button>
+    </div>
+  </div>
+
   <!-- v24：PWA 更新提示条（新版装好后出现，点刷新即用上） -->
   <div class="update-bar hidden" id="updateBar">
     <span>🎉 新版本已就绪</span>
@@ -345,6 +386,7 @@
   <script src="scoring.js"></script>
   <script src="sfx.js"></script>
   <script src="bgm.js"></script>
+  <script src="ai.js"></script>
   <script src="app.js"></script>
   <script>
     if ('serviceWorker' in navigator) {
