@@ -1094,3 +1094,13 @@ body {
   background: var(--surface); border: 1px solid var(--line);
   border-radius: 14px; padding: 14px 16px; margin-bottom: 12px;
 }
+
+.ai-answer-input {
+  width: 100%; min-height: 110px; margin: 12px 0 8px; padding: 12px;
+  border: 1px solid var(--line); border-radius: 10px;
+  background: var(--surface); color: var(--text); font: inherit; resize: vertical;
+}
+.ai-result, .recovery-report {
+  margin-top: 12px; padding: 12px; border: 1px solid var(--line);
+  border-radius: 10px; white-space: pre-wrap; overflow-wrap: anywhere; font-size: 14px;
+}

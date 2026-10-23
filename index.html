@@ -237,6 +237,21 @@
         <input type="file" id="bgmFile" accept="audio/*" class="hidden">
         <div class="muted" style="font-size:12px;margin-top:4px">支持 mp3 / m4a / ogg / wav，存在本机不联网</div>
       </div>
+      <div class="field"><label>AI 判题（可选）</label>
+        <input type="password" id="aiKeyInput" placeholder="智谱 API Key，留空可停用" autocomplete="off">
+        <input type="text" id="aiModelInput" placeholder="模型名称，如 glm-4-flash" autocomplete="off" style="margin-top:6px">
+        <div class="btn-row" style="margin-top:8px">
+          <button class="btn secondary" id="aiSaveBtn">保存配置</button>
+          <button class="btn secondary" id="aiTestBtn">测试连接</button>
+        </div>
+        <div id="aiStatus" class="muted" role="status">AI 尚未初始化</div>
+        <div class="muted" style="font-size:12px;margin-top:6px">判题时仅将当前题目、参考答案和你的回答发送到智谱官方接口。Key 仅保存在本站本机，不使用公共代理；费用以你的账号为准。</div>
+      </div>
+      <div class="field"><label>公开题库恢复</label>
+        <button class="btn secondary" id="recoverBanks">检查并补齐公开题目</button>
+        <div class="muted" style="font-size:12px;margin-top:6px">只补缺题，保留已有题目和个人记录。自动备份属于本站本地存储，请定期导出备份。</div>
+        <div id="recoveryReport" class="hidden recovery-report" role="status"></div>
+      </div>
       <!-- v39：选项乱序开关（用户要求可切换：乱序/原序） -->
       <div class="field"><label>选项乱序（内容在 ABCD 位置间打乱）</label>
         <div class="seg" id="optShuffleSeg">
@@ -357,6 +372,7 @@
   <script src="scoring.js"></script>
   <script src="sfx.js"></script>
   <script src="bgm.js"></script>
+  <script src="ai.js"></script>
   <script src="app.js"></script>
   <script>
     if ('serviceWorker' in navigator) {

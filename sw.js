@@ -8,7 +8,7 @@
  *   3. 离线回退 HTML 只用于导航请求；JS/CSS 等子资源离线时绝不能回退成 index.html
  *      （否则控制台一片 MIME 错误、页面假死）。
  */
-const CACHE = 'card-quiz-v47';   // v39：外部审查第二轮修复 + ABCD 固定序 + 跨库保存新题库（多选确认模式/覆盖恢复安全/跨库进度保留/幂等提交/断点全状态/重试安全/毕业标准/合并状态/SW版本/优化）
+const CACHE = 'card-quiz-v48';   // 安全恢复、完整备份与可选 AI 判题
                                  // 注意：本 SW 对同源资源是 cache-first，改了 styles.css/app.js
                                  // 必须同步改这里，否则老用户永远拿到旧样式。
 const PREFIX = 'card-quiz-';
@@ -17,7 +17,8 @@ const CORE = [
   './app.js', './db.js', './parser.js', './scoring.js', './slicer.js', './scheduler.js', './sfx.js', './bgm.js'
 ];
 const DECOR = ['./manifest.webmanifest', './icon.svg', './bg-light.webp', './bg-dark.webp'];
-const SHELL = CORE.concat(DECOR);
+const OPTIONAL = ['./ai.js'];
+const SHELL = CORE.concat(DECOR, OPTIONAL);
 
 self.addEventListener('install', (e) => {
   e.waitUntil((async () => {
@@ -34,6 +35,8 @@ self.addEventListener('install', (e) => {
     }
     // 装饰：尽力而为，缺了只影响观感
     await Promise.all(DECOR.map(url => c.add(url).catch(err => { console.warn('[sw] 装饰资源缓存失败（可容忍）：', url, err); })));
+    // AI 缺失不能阻断基础题库升级；恢复资产只按用户操作读取，不自动缓存题库。
+    await Promise.all(OPTIONAL.map(url => c.add(url).catch(() => {})));
     await self.skipWaiting();
   })());
 });

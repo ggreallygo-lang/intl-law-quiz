@@ -210,14 +210,115 @@
       const part = list.slice(start, start + CHUNK);
       const store = await tx('questions', 'readwrite');
       for (let i = 0; i < part.length; i++) {
-        const rec = Object.assign({ id: uid(), bankId: bankId, order: start + i }, part[i]);
+        const rec = Object.assign({ order: start + i }, part[i], { id: uid(), bankId: bankId });
         ids.push(rec.id);
-        store.put(rec);
+        store.add(rec);
       }
       await txDone(store.transaction);
     }
     if (list.length) await bumpBankCount(bankId, list.length);
     return ids;
+  }
+
+  // 恢复只补缺题；来源身份与数据库主键分离，旧题及其学习记录不重新编号。
+  async function importRecoveredBank(sourceKey, name, outline, questions) {
+    if (typeof sourceKey !== 'string' || !sourceKey.trim() || !Array.isArray(questions) || !questions.length) {
+      throw new Error('恢复来源或题目列表无效');
+    }
+    const sourceIds = new Set();
+    const items = questions.map((q, i) => {
+      if (!q || typeof q !== 'object' || Array.isArray(q)) throw new Error('恢复题目 ' + (i + 1) + ' 格式无效');
+      if (!['single', 'multiple', 'judge', 'fill', 'term', 'essay'].includes(q.type) || !String(q.stem || q.term || '').trim()) {
+        throw new Error('恢复题目 ' + (i + 1) + ' 缺少有效题型或题干');
+      }
+      const sourceId = q.sourceQuestionId != null ? q.sourceQuestionId : q.recoveryKey;
+      if (!((typeof sourceId === 'string' && sourceId.trim()) || (typeof sourceId === 'number' && Number.isFinite(sourceId)))) {
+        throw new Error('恢复题目 ' + (i + 1) + ' 缺少源 ID');
+      }
+      const key = String(sourceId);
+      if (sourceIds.has(key)) throw new Error('恢复来源中有重复源 ID：' + key);
+      sourceIds.add(key);
+      return structuredClone(Object.assign({}, q, { sourceId: sourceKey, sourceQuestionId: key, recoveryKey: key }));
+    });
+    const cleanOutline = outline ? sanitizeOutline(outline) : null;
+    const legacyContentKey = q => JSON.stringify([chapterKey(q), q.stem || q.term || '']);
+    const db = await open();
+    const t = db.transaction(['banks', 'questions'], 'readwrite');
+    const done = txDone(t);
+    done.catch(() => {});
+    try {
+      const bs = t.objectStore('banks'), qs = t.objectStore('questions');
+      const banks = await reqP(bs.getAll());
+      let bank = banks.find(b => b.sourceId === sourceKey || b.recoverySource === sourceKey);
+      let existing = [];
+      const diagnostics = [];
+      if (bank) {
+        existing = await reqP(qs.index('bankId').getAll(IDBKeyRange.only(bank.id)));
+      } else {
+        const legacy = banks.filter(b => b.name === name && !b.sourceId && !b.recoverySource);
+        const candidates = [];
+        const legacyIds = new Map();
+        items.forEach(q => {
+          if (q.legacyId) legacyIds.set(q.legacyId, legacyIds.has(q.legacyId) ? null : q);
+        });
+        for (const b of legacy) {
+          const old = await reqP(qs.index('bankId').getAll(IDBKeyRange.only(b.id)));
+          let matched = 0, conflict = false;
+          old.forEach(q => {
+            const source = legacyIds.get(q.id);
+            if (!source) return;
+            if ((!q.sourceId || q.sourceId === sourceKey) && legacyContentKey(q) === legacyContentKey(source)) matched++;
+            else conflict = true;
+          });
+          if (matched && !conflict) candidates.push({ bank: b, questions: old });
+          else diagnostics.push('保留旧题库「' + b.name + '」(' + b.id + ')：' + (conflict ? '原题身份冲突' : '没有可验证的原题，不能关联旧进度'));
+        }
+        if (candidates.length === 1) {
+          bank = candidates[0].bank;
+          existing = candidates[0].questions;
+        } else if (candidates.length > 1) {
+          diagnostics.push('多个旧题库均与来源匹配，保留原库并新建来源题库，不能自动关联旧进度');
+        }
+      }
+      const now = Date.now();
+      const isNew = !bank;
+      if (!bank) bank = { id: uid(), name: name, outline: cleanOutline, createdAt: now, updatedAt: now, count: 0 };
+      const keys = new Set();
+      existing.forEach(q => {
+        if (q.sourceId && q.sourceId !== sourceKey) return;
+        const key = q.sourceQuestionId != null ? q.sourceQuestionId : q.recoveryKey;
+        if (key != null) keys.add(String(key));
+        const matches = items.filter(item => item.legacyId === q.id && legacyContentKey(item) === legacyContentKey(q));
+        if (key == null && matches.length === 1) {
+          const legacy = matches[0];
+          keys.add(legacy.sourceQuestionId);
+          // 只补来源身份，保留用户内容和旧 qid；以后编辑题干也不会被重复补入。
+          qs.put(Object.assign({}, q, { sourceId: sourceKey, sourceQuestionId: legacy.sourceQuestionId, recoveryKey: legacy.sourceQuestionId }));
+        }
+      });
+      let added = 0;
+      const maxOrder = existing.reduce((max, q) => Math.max(max, Number(q.order) || 0), -1);
+      items.forEach(q => {
+        const key = q.sourceQuestionId;
+        if (keys.has(key)) return;
+        const rec = Object.assign({}, q, { id: uid(), bankId: bank.id, order: maxOrder + 1 + added });
+        qs.add(rec);
+        keys.add(key); added++;
+      });
+      bank.sourceId = sourceKey;
+      bank.recoverySource = sourceKey;
+      bank.count = existing.length + added;
+      bank.updatedAt = now;
+      if (!bank.outline && cleanOutline) bank.outline = cleanOutline;
+      if (isNew) bs.add(bank); else bs.put(bank);
+      await done;
+      return { added: added, skipped: items.length - added, total: bank.count, bankId: bank.id,
+        ambiguous: diagnostics.length > 0, diagnostics: diagnostics };
+    } catch (e) {
+      try { t.abort(); } catch (_) {}
+      await done.catch(() => {});
+      throw e;
+    }
   }
 
   // 独立事务更新题量：不跟题目写入混在一个长事务里
@@ -1235,19 +1336,83 @@
 
   // ---------- v45：自动备份 ----------
   var BACKUP_KEY = 'auto-backup';
-  var BACKUP_DATE_KEY = 'auto-backup-date';
+  const BACKUP_STORES = { banks: 'id', questions: 'id', progress: 'qid', sessions: 'id', goals: 'id', meta: 'key' };
+
+  function validateBackup(data, legacy) {
+    if (!data || typeof data !== 'object' || Array.isArray(data)) throw new Error('备份格式无效');
+    const missingStores = [];
+    const snapshot = {};
+    const records = {};
+    Object.keys(BACKUP_STORES).forEach(store => {
+      let list = data[store];
+      if (list === undefined && legacy && ['sessions', 'goals', 'meta'].includes(store)) {
+        missingStores.push(store); list = [];
+      }
+      if (!Array.isArray(list)) throw new Error('备份中的 ' + store + ' 不是数组');
+      const map = new Map(), key = BACKUP_STORES[store];
+      list.forEach(rec => {
+        if (!rec || typeof rec !== 'object' || Array.isArray(rec)) throw new Error(store + ' 中有无效记录');
+        const id = rec[key];
+        if (!((typeof id === 'string' && id.trim()) || (typeof id === 'number' && Number.isFinite(id)))) {
+          throw new Error(store + ' 中有无效主键 ' + key);
+        }
+        if (map.has(id)) throw new Error(store + ' 中有重复主键：' + id);
+        structuredClone(rec);
+        map.set(id, rec);
+      });
+      snapshot[store] = list;
+      records[store] = map;
+    });
+    if (!snapshot.banks.length || !snapshot.questions.length) throw new Error('题库或题目为空，已保留原备份');
+    const counts = new Map();
+    snapshot.questions.forEach(q => {
+      if (!records.banks.has(q.bankId)) throw new Error('题目引用了不存在的题库：' + q.id);
+      counts.set(q.bankId, (counts.get(q.bankId) || 0) + 1);
+    });
+    snapshot.banks.forEach(b => {
+      if (!Number.isInteger(b.count) || b.count !== (counts.get(b.id) || 0)) throw new Error('题库题量与实存不一致：' + b.name);
+      if (!b.count) throw new Error('存在空题库，已保留原备份：' + b.name);
+    });
+    ['progress', 'sessions'].forEach(store => snapshot[store].forEach(rec => {
+      const question = records.questions.get(rec.qid);
+      if (!question) throw new Error(store + ' 引用了不存在的题目：' + rec.qid);
+      if ((store === 'progress' || rec.bankId != null) &&
+          (!records.banks.has(rec.bankId) || question.bankId !== rec.bankId)) {
+        throw new Error(store + ' 的题库引用无效：' + rec.qid);
+      }
+    }));
+    snapshot.goals.forEach(g => {
+      if (g.bankId != null && !records.banks.has(g.bankId)) throw new Error('目标引用了不存在的题库：' + g.id);
+    });
+    snapshot.banks = snapshot.banks.map(b => Object.assign({}, b, { outline: sanitizeOutline(b.outline) }));
+    return { snapshot: snapshot, missingStores: missingStores };
+  }
 
   async function backupToLocalStorage() {
+    const db = await open();
+    const t = db.transaction(Object.keys(BACKUP_STORES), 'readonly');
+    const done = txDone(t);
+    done.catch(() => {});
     try {
-      var banks = await reqP((await tx('banks', 'readonly')).getAll());
-      var questions = await reqP((await tx('questions', 'readonly')).getAll());
-      var progress = await reqP((await tx('progress', 'readonly')).getAll());
-      var json = JSON.stringify({ banks: banks, questions: questions, progress: progress, savedAt: Date.now() });
-      if (json.length > 4 * 1024 * 1024) return false;
-      localStorage.setItem(BACKUP_KEY, json);
-      localStorage.setItem(BACKUP_DATE_KEY, String(Date.now()));
+      const stores = Object.keys(BACKUP_STORES);
+      const lists = await Promise.all(stores.map(store => reqP(t.objectStore(store).getAll())));
+      await done;
+      const snapshot = {};
+      stores.forEach((store, i) => { snapshot[store] = lists[i]; });
+      const checked = validateBackup(snapshot, false);
+      const json = JSON.stringify(Object.assign({ app: 'card-quiz', version: 1, savedAt: Date.now() }, checked.snapshot));
+      if (new Blob([json]).size > 4 * 1024 * 1024) throw new Error('自动备份超过 4 MB，已保留旧备份，请使用手动导出');
+      try { localStorage.setItem(BACKUP_KEY, json); }
+      catch (e) {
+        if (isQuotaError(e)) throw new Error('本地存储空间不足，已保留旧备份，请使用手动导出');
+        throw e;
+      }
       return true;
-    } catch (e) { return false; }
+    } catch (e) {
+      try { t.abort(); } catch (_) {}
+      await done.catch(() => {});
+      throw e;
+    }
   }
 
   function getBackupInfo() {
@@ -1260,34 +1425,50 @@
   }
 
   async function restoreFromLocalStorage() {
+    const json = localStorage.getItem(BACKUP_KEY);
+    if (!json) return false;
+    const checked = validateBackup(JSON.parse(json), true);
+    const db = await open();
+    const stores = Object.keys(BACKUP_STORES);
+    const t = db.transaction(stores, 'readwrite');
+    const done = txDone(t);
+    done.catch(() => {});
     try {
-      var json = localStorage.getItem(BACKUP_KEY);
-      if (!json) return false;
-      var d = JSON.parse(json);
-      if (!d.banks || !d.banks.length) return false;
-      var db = await open();
-      var t = db.transaction(['banks', 'questions', 'progress'], 'readwrite');
-      var bs = t.objectStore('banks'), qs = t.objectStore('questions'), ps = t.objectStore('progress');
-      var existing = await reqP(bs.count());
-      if (existing > 0) return false;   // 只在空库时恢复
-      d.banks.forEach(function (b) { bs.put(b); });
-      (d.questions || []).forEach(function (q) { qs.put(q); });
-      (d.progress || []).forEach(function (p2) { ps.put(p2); });
-      await txDone(t);
-      return true;
-    } catch (e) { return false; }
+      const counts = await Promise.all(stores.map(store => reqP(t.objectStore(store).count())));
+      if (counts.some(count => count > 0)) {
+        await done;
+        return false;
+      }
+      stores.forEach(store => checked.snapshot[store].forEach(rec => t.objectStore(store).add(rec)));
+      await done;
+      return { restored: true, missingStores: checked.missingStores };
+    } catch (e) {
+      try { t.abort(); } catch (_) {}
+      await done.catch(() => {});
+      throw e;
+    }
   }
 
   async function autoBackupCheck() {
-    var banks = await reqP((await tx('banks', 'readonly')).getAll());
-    if (!banks.length) {
+    const db = await open();
+    const stores = Object.keys(BACKUP_STORES);
+    const t = db.transaction(stores, 'readonly');
+    const done = txDone(t);
+    done.catch(() => {});
+    const counts = await Promise.all(stores.map(store => reqP(t.objectStore(store).count())));
+    await done;
+    if (!counts[0] && counts.some(count => count > 0)) {
+      throw new Error('题库为空但仍有题目或学习记录，已停止自动恢复和备份，请先手动导出保留数据');
+    }
+    if (!counts[0] && !counts[1]) {
       var restored = await restoreFromLocalStorage();
-      if (restored) return { action: 'restored', info: getBackupInfo() };
+      if (restored) return { action: 'restored', info: getBackupInfo(), missingStores: restored.missingStores };
       return { action: 'none' };
     }
-    var last = localStorage.getItem(BACKUP_DATE_KEY);
+    if (!counts[1]) throw new Error('存在空题库，已停止自动备份并保留原备份，请先手动导出检查');
+    const info = getBackupInfo();
     var today = new Date().toDateString();
-    var lastDay = last ? new Date(parseInt(last)).toDateString() : '';
+    var lastDay = info && info.savedAt ? new Date(info.savedAt).toDateString() : '';
     if (today !== lastDay) {
       var ok = await backupToLocalStorage();
       if (ok) return { action: 'backed-up', info: getBackupInfo() };
@@ -1297,7 +1478,7 @@
 
   return {
     open, saveBank, listBanks, getBank, deleteBank, renameBank, sanitizeOutline,
-    addQuestions, listQuestions, updateQuestion,
+    addQuestions, importRecoveredBank, listQuestions, updateQuestion,
     getOutline, deriveOutlineFromQuestions, expandChapterPaths,
     countByChapterPath, applyCounts, chapterKey,
     getProgress, saveProgress, listProgress, bulkUpdateProgress,

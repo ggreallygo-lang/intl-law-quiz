@@ -101,6 +101,8 @@
     ['home', 'bank', 'study', 'wrong'].forEach(v => $('#view-' + v).classList.toggle('hidden', v !== name));
   }
   function cleanupStudy() {
+    if (aiRequest) { aiRequest.abort(); aiRequest = null; }
+    practiceRender++;
     stopTimer(exam); stopTimer(prac); stopTimer(mem);   // v21：三个模式的计时器统一停
     if (mem && mem.keyHandler) { document.removeEventListener('keydown', mem.keyHandler); mem.keyHandler = null; }   // v32 A6
   }
@@ -376,103 +378,62 @@
   }
 
 
-  // ---------- v47：从线上仓库恢复题库 ----------
+  // ---------- 公开题库恢复：来源明确、只补缺题 ----------
   var _repoRestoring = false;
   async function restoreFromRepo() {
     if (_repoRestoring) { toast('正在恢复中…'); return; }
     _repoRestoring = true;
+    const buttons = [$('#restoreFromRepo'), $('#recoverBanks')].filter(Boolean);
+    buttons.forEach(b => { b.disabled = true; });
+    const report = $('#recoveryReport');
+    report.textContent = '正在读取已核实的公开题库…';
+    report.classList.remove('hidden');
     try {
-      var total = 0;
-      total += await restoreLegacyCards();
-      total += await restoreMdFiles();
-      if (total > 0) { toast('✅ 恢复了 ' + total + ' 道题'); renderHome(); }
-      else { toast('没有找到可恢复的题库数据'); }
-    } catch (e) { reportErr('恢复失败', e); }
-    finally { _repoRestoring = false; }
-  }
-  async function restoreLegacyCards() {
-    var count = 0;
-    try {
-      var resp = await fetch('./review-cards.js');
-      if (resp.ok) {
-        var code = await resp.text();
-        var cards = extractCardsArray(code, 'LAW_REVIEW');
-        if (cards && cards.length) count += await importCards(cards, '国际法复习题');
+      const response = await fetch('./recovery-data.json', { cache: 'no-store' });
+      if (!response.ok) throw new Error('recovery-data.json：HTTP ' + response.status);
+      const data = await response.json();
+      if (data.version !== 1 || !Array.isArray(data.sources) || !data.sources.length) throw new Error('recovery-data.json：来源清单格式错误');
+      let total = 0, failures = 0;
+      const excluded = data.diagnostics || [];
+      const lines = excluded.map(d => d.sourceId + '：未自动恢复（预计 ' + d.sourceQuestionCount + ' 题），' + d.reason + '；' +
+        (d.issues || []).map(i => '第 ' + i.questionNumber + ' 题：' + i.reason).join('；'));
+      let processed = 0;
+      for (const source of data.sources) {
+        try {
+          if (!source.sourceId || !Array.isArray(source.questions) || source.questions.length !== source.expectedCount) throw new Error('来源题量不一致');
+          for (const q of source.questions) {
+            if (!TYPE_LABEL[q.type] || !(q.stem || q.term) || !Scoring.hasAnswer(q)) throw new Error('条目 ' + (q.sourceQuestionId || '?') + ' 题型、题干或答案不完整');
+            if (q.type === 'single' || q.type === 'multiple') {
+              const keys = Scoring.answerKeys(q);
+              if (!Array.isArray(q.options) || !keys.length || keys.some(k => !q.options.some(o => o.key === k))) throw new Error('条目 ' + q.sourceQuestionId + ' 选项或答案无效');
+            }
+          }
+          const result = await DB.importRecoveredBank(source.sourceId, source.name, source.outline, source.questions);
+          total += result.added;
+          lines.push(source.sourceId + '：预计 ' + source.expectedCount + '，新增 ' + result.added + '，已存在 ' + result.skipped + '，失败 0');
+          if (result.diagnostics) lines.push(...result.diagnostics);
+        } catch (e) {
+          failures++;
+          lines.push((source.sourceId || '未知来源') + '：失败，' + e.message + '；可重试');
+        }
+        report.textContent = lines.join('\n') + '\n处理进度 ' + (++processed) + '/' + data.sources.length;
       }
-    } catch (e) {}
-    try {
-      var r2 = await fetch('./law-cards.js');
-      if (r2.ok) {
-        var c2 = await r2.text();
-        var cards2 = extractCardsArray(c2, 'LAW_CARDS');
-        if (cards2 && cards2.length) count += await importCards(cards2, '国际法框架卡');
+      const snapshot = await DB.dumpAll();
+      const questionsById = new Map(snapshot.questions.map(q => [q.id, q]));
+      for (const store of ['progress', 'sessions']) {
+        const unlinked = snapshot[store].filter(r => !questionsById.has(r.qid) || (r.bankId && questionsById.get(r.qid).bankId !== r.bankId));
+        if (unlinked.length) lines.push('保留 ' + unlinked.length + ' 条无法自动关联的旧' + (store === 'progress' ? '学习进度' : '作答流水') + '（题目 ID：' + [...new Set(unlinked.map(r => r.qid))].join('、') + '）。未重新分配到其他题目，请导出备份保留记录。');
       }
-    } catch (e) {}
-    return count;
-  }
-  function extractCardsArray(code, name) {
-    try {
-      var idx = code.indexOf(name);
-      if (idx < 0) return null;
-      var bracketStart = code.indexOf('[', idx);
-      if (bracketStart < 0) return null;
-      var depth = 0;
-      for (var i = bracketStart; i < code.length; i++) {
-        if (code[i] === '[') depth++;
-        else if (code[i] === ']') { depth--; if (depth === 0) break; }
-      }
-      if (depth !== 0) return null;
-      var body = code.slice(bracketStart, i + 1);
-      var fn = new Function('return ' + body + ';');
-      var arr = fn();
-      return Array.isArray(arr) ? arr : null;
-    } catch (e) { return null; }
-  }
-  async function importCards(cards, bankName) {
-    var existing = await DB.listBanks();
-    if (existing.some(function (b) { return b.name === bankName; })) return 0;
-    var byCh = {};
-    cards.forEach(function (c) { var ch = c.chapter || '未分组'; (byCh[ch] = byCh[ch] || []).push(c); });
-    var qs = [], outline = [], cid = 0;
-    Object.keys(byCh).forEach(function (ch) {
-      var nid = 'ch-' + (++cid);
-      outline.push({ id: nid, title: ch, level: 2, children: [] });
-      byCh[ch].forEach(function (c, i) {
-        qs.push({ id: 'lg' + cid + '-' + i, bankId: '', type: 'term',
-          chapterId: nid, chapterPath: [ch], chapter: ch,
-          term: (c.front || '').replace(/^(名词解释：|简答骨架：|简答：|对比：)/, ''),
-          definition: c.back || '', stem: c.front || '', answer: c.back || '',
-          order: qs.length, explanation: c.cue || '' });
-      });
-    });
-    if (!qs.length) return 0;
-    var bank = await DB.saveBank(bankName, outline);
-    try {
-      qs.forEach(function (q) { q.bankId = bank.id; });
-      await DB.addQuestions(bank.id, qs);
-      return qs.length;
-    } catch (e) { await DB.deleteBank(bank.id).catch(function () {}); throw e; }
-  }
-  async function restoreMdFiles() {
-    var count = 0;
-    var names = ['00247_国际法真题_带答案.md', '202410_国际法真题_带答案.md', '202504_国际法真题_带答案.md', '机场服务话术背书.md'];
-    for (var i = 0; i < names.length; i++) {
-      try {
-        var r = await fetch('./' + encodeURIComponent(names[i]));
-        if (!r.ok) continue;
-        var text = await r.text();
-        if (!text || text.length < 20) continue;
-        var parsed = QuizParser.parseDocument(text);
-        if (!parsed || !parsed.questions.length) continue;
-        var bn = (parsed.name && parsed.name !== '未命名题库') ? parsed.name : names[i].replace(/\.md$/, '');
-        var ex = await DB.listBanks();
-        if (ex.some(function (b) { return b.name === bn; })) continue;
-        var bank = await DB.saveBank(bn, parsed.outline);
-        try { await DB.addQuestions(bank.id, parsed.questions); count += parsed.questions.length; }
-        catch (e) { await DB.deleteBank(bank.id).catch(function () {}); }
-      } catch (e) {}
+      report.textContent = (failures || excluded.length ? '部分来源未恢复。' : '公开题库核对完成。') + '新增 ' + total + ' 题。\n' + lines.join('\n') + '\n只恢复公开题目，不包含个人学习进度；旧记录已保留。';
+      toast(failures || excluded.length ? '已新增 ' + total + ' 题，未恢复来源详见设置' : '已补回 ' + total + ' 题');
+      await renderHome();
+    } catch (e) {
+      report.textContent = '恢复失败：' + e.message + '。请检查网络或恢复资产后重试。已有题库保持不变。';
+      reportErr('恢复失败', e);
+    } finally {
+      _repoRestoring = false;
+      buttons.forEach(b => { b.disabled = false; });
     }
-    return count;
   }
 
   // ---------- v31：跨库刷题（多题库混合 + 题型筛选） ----------
@@ -1547,6 +1508,104 @@
 
   // ---------- 刷题模式 ----------
   let prac = null;
+  let aiRequest = null;
+  let practiceRender = 0;
+  let aiReady = false;
+
+  function initAi() {
+    const status = $('#aiStatus');
+    try {
+      if (!window.AI) throw new Error('判题模块未加载');
+      $('#aiKeyInput').value = AI.getKey();
+      $('#aiModelInput').value = AI.getModel();
+      const sync = () => { status.textContent = AI.hasKey() ? '已配置：' + AI.getModel() : '未配置，仍可看答案自评'; };
+      sync();
+      aiReady = true;
+      $('#aiSaveBtn').onclick = () => {
+        try {
+          AI.setModel($('#aiModelInput').value);
+          AI.setKey($('#aiKeyInput').value);
+          sync();
+          toast(AI.hasKey() ? 'AI 配置已保存' : 'AI 已停用');
+        } catch (e) { status.textContent = '保存失败：' + e.message; }
+      };
+      $('#aiTestBtn').onclick = async () => {
+        const button = $('#aiTestBtn');
+        button.disabled = true;
+        $('#aiSaveBtn').disabled = true;
+        status.textContent = '正在测试已保存的配置…';
+        try { await AI.testConnection(); status.textContent = '连接成功：' + AI.getModel(); }
+        catch (e) { status.textContent = e.message; }
+        finally { button.disabled = false; $('#aiSaveBtn').disabled = false; }
+      };
+    } catch (e) {
+      aiReady = false;
+      status.textContent = 'AI 暂不可用：' + e.message + '；题库和自评仍可使用';
+      $('#aiSaveBtn').disabled = true;
+      $('#aiTestBtn').disabled = true;
+      console.warn('[AI] 初始化失败，基础功能继续运行');
+    }
+  }
+
+  function aiGradeHtml(q) {
+    try {
+      if (!aiReady || !AI.hasKey() || !Scoring.hasAnswer(q) || !['term', 'essay', 'fill'].includes(q.type)) return '';
+      return (Scoring.isSelfAssess(q) ? '<textarea id="aiAnswerInput" class="ai-answer-input" placeholder="先写下你的答案，可选择 AI 判题或看答案自评" maxlength="12000"></textarea>' : '') +
+        '<div class="btn-row"><button class="btn secondary" id="aiGradeBtn">AI 判题</button><button class="btn secondary hidden" id="aiCancelBtn">取消判题</button></div>' +
+        '<div id="aiGradeResult" class="ai-result hidden" role="status"></div>';
+    } catch (e) { return '<div class="muted">AI 暂不可用，请使用原有自评或提交方式。</div>'; }
+  }
+
+  function bindAiGrade(q) {
+    const button = $('#aiGradeBtn');
+    if (!button) return;
+    const input = $('#aiAnswerInput') || $('#fillInput');
+    const result = $('#aiGradeResult');
+    const cancel = $('#aiCancelBtn');
+    const session = prac, index = prac.i, token = practiceRender;
+    const current = () => curView === 'study' && prac === session && prac.i === index && practiceRender === token && prac.list[index] === q && (!prac.results[index] || prac.results[index] === 'skip') && document.contains(result);
+    input.addEventListener('input', () => { result.replaceChildren(); result.classList.add('hidden'); });
+    cancel.onclick = () => { if (aiRequest) aiRequest.abort(); };
+    button.onclick = async () => {
+      if (!current() || button.disabled) return;
+      const answer = input.value.trim();
+      if (!answer) { toast('请先填写答案'); return; }
+      const controller = new AbortController();
+      aiRequest = controller;
+      button.disabled = true;
+      input.disabled = true;
+      cancel.classList.remove('hidden');
+      result.classList.remove('hidden');
+      result.textContent = '正在判题，结果仅供参考，确认后才记入本次作答…';
+      try {
+        const suggestion = await AI.grade(q, answer, { signal: controller.signal });
+        if (!current() || controller.signal.aborted) return;
+        const labels = { correct: '建议：正确', partial: '部分正确，建议按错题复习', incorrect: '建议：错误', uncertain: '无法可靠判定，请自评' };
+        result.textContent = labels[suggestion.verdict] + '\n' + suggestion.explanation +
+          (suggestion.missingPoints.length ? '\n缺失要点：\n' + suggestion.missingPoints.join('\n') : '');
+        const row = document.createElement('div');
+        row.className = 'btn-row';
+        for (const [label, right] of [['算对', true], ['算错', false]]) {
+          const confirmButton = document.createElement('button');
+          confirmButton.className = 'btn secondary';
+          confirmButton.textContent = label;
+          confirmButton.onclick = () => {
+            if (!current() || input.value.trim() !== answer) return;
+            row.querySelectorAll('button').forEach(b => { b.disabled = true; });
+            safe(finishPractice(q, right, answer), '确认判题失败');
+          };
+          row.appendChild(confirmButton);
+        }
+        result.appendChild(row);
+      } catch (e) {
+        if (current()) result.textContent = e.name === 'AbortError' ? '已取消，可重试或看答案自评。' : e.message + '；未计入作答，可重试或自评。';
+      } finally {
+        if (aiRequest === controller) aiRequest = null;
+        if (current()) { button.disabled = false; input.disabled = false; cancel.classList.add('hidden'); }
+      }
+    };
+  }
+
   async function startPractice(opts) {
     opts = opts || {};
     stopTimer(prac);                        // v21：防上一轮的 interval 泄漏
@@ -1559,6 +1618,8 @@
     renderPractice();
   }
   function renderPractice() {
+    if (aiRequest) { aiRequest.abort(); aiRequest = null; }
+    practiceRender++;
     const view = $('#view-study'); showView('study');
     if (prac) prac.locked = false;        // v14：每题渲染时解锁，防连点连跳
     if (prac.i >= prac.list.length) return renderPracticeResult();
@@ -1617,6 +1678,7 @@
       body = `<div class="q-stem"><span class="qnum">${TYPE_LABEL[q.type]} ${prac.i + 1}/${total}</span>${esc(q.stem)}</div>` +
         opts.map(o => `<div class="option" data-k="${o.key}"><span class="key">${o.key}</span> ${esc(o.text)}</div>`).join('');
     }
+    body += aiGradeHtml(q);
     // v14：题干+选项包一层 .slide-in，切题时从右侧滑入，不再是"啪"地整屏替换
     // v28：导航行常驻（上一题 / 跳过）；results[i] 有作答记录时进「回看」模式
     view.innerHTML =
@@ -1645,12 +1707,14 @@
       prac.i++; renderPractice();
     };
 
+    bindAiGrade(q);
+
     // 自评题（名词解释 / 简答 / 长答案填空）
     if (Scoring.isSelfAssess(q)) {
       $('#revealTerm').onclick = () => {
         $('#termBack').classList.remove('hidden'); $('#revealTerm').classList.add('hidden');
-        $('#tRight').onclick = () => finishPractice(q, true, '自评');
-        $('#tWrong').onclick = () => finishPractice(q, false, '自评');
+        $('#tRight').onclick = () => finishPractice(q, true, ($('#aiAnswerInput') || {}).value || '自评');
+        $('#tWrong').onclick = () => finishPractice(q, false, ($('#aiAnswerInput') || {}).value || '自评');
       };
       return;
     }
@@ -1803,8 +1867,16 @@
   }
 
   async function finishPractice(q, right, picked) {
+    if (!prac || curView !== 'study' || prac.list[prac.i] !== q) return;
     // v38 #4：幂等——同一题本轮只允许一次有效提交（双击/回看/异步竞态全挡住）
     if (prac.results[prac.i] && prac.results[prac.i] !== 'skip') return;
+    if (aiRequest) { aiRequest.abort(); aiRequest = null; }
+    const aiButton = $('#aiGradeBtn');
+    if (aiButton) aiButton.disabled = true;
+    const aiInput = $('#aiAnswerInput');
+    if (aiInput) aiInput.disabled = true;
+    const aiCancel = $('#aiCancelBtn');
+    if (aiCancel) aiCancel.classList.add('hidden');
     if (right) SFX.right(); else SFX.wrong();   // v22：判分音效（选项/填空/自评三条路都汇到这里）
     const fb = $('#pracFeedback');
     // v36：客观题先给大号答案横幅（判断/选择/填空；自评题不需要）
@@ -1842,35 +1914,53 @@
       prac.i++; renderPractice();
     };
 
-    await safe((async () => {
-      let p = await DB.getProgress(q.id) || { qid: q.id, bankId: (S.mixed && q.bankId) ? q.bankId : S.bank.id, ease: 2.5, interval: 0, reps: 0, due: 0, lapses: 0 };
-      p.practice = p.practice || { correct: 0, wrong: 0 };
-      if (right) {
-        p.practice.correct++;
-        p.wrongStreak = (p.wrongStreak || 0) + 1;   // v24：连续答对，攒够毕业
-      }
-      else {
-        p.practice.wrong++;
-        p.lapses = (p.lapses || 0) + 1;
-        p.wrongStreak = 0;                           // v24：答错即断连续
-        p.lastWrong = Date.now();       // 错题本排序用
-        p.wrongDismissed = false;       // 曾被移除的再答错要收回来
-      }
-      // v32 A3（Anki 调研：错误驱动所有权）：客观题答对不进长期记忆循环（due 推远），
-      // 答错 / 回忆型自评题（检索收益高）立即可复习；已在 SRS 里的卡不被刷题答对驱逐
-      if (right && !Scoring.isSelfAssess(q)) {
-        // v34.2：答对不进高频复习，但进低频抽查池（30 天后第一次抽查）
-        if (!p.inSrs) {
-          p.enrollment = 'sampling';
-          p.sampleStep = 0;
-          p.due = Date.now() + SAMPLE_DAYS[0] * 86400000;
+    let pendingProgress = null;
+    let saving = false;
+    const retry = document.createElement('button');
+    retry.className = 'btn secondary';
+    retry.textContent = '作答未保存，重试保存';
+    const saveResult = async () => {
+      if (saving) return;
+      saving = true;
+      retry.disabled = true;
+      try {
+        if (!pendingProgress) {
+          let p = await DB.getProgress(q.id) || { qid: q.id, bankId: sessP.bankId, ease: 2.5, interval: 0, reps: 0, due: 0, lapses: 0 };
+          p.practice = p.practice || { correct: 0, wrong: 0 };
+          if (right) {
+            p.practice.correct++;
+            p.wrongStreak = (p.wrongStreak || 0) + 1;   // v24：连续答对，攒够毕业
+          }
+          else {
+            p.practice.wrong++;
+            p.lapses = (p.lapses || 0) + 1;
+            p.wrongStreak = 0;                           // v24：答错即断连续
+            p.lastWrong = Date.now();       // 错题本排序用
+            p.wrongDismissed = false;       // 曾被移除的再答错要收回来
+          }
+          // v32 A3：客观题答对进入低频抽查；自评或答错立即可复习。
+          if (right && !Scoring.isSelfAssess(q)) {
+            if (!p.inSrs) {
+              p.enrollment = 'sampling';
+              p.sampleStep = 0;
+              p.due = Date.now() + SAMPLE_DAYS[0] * 86400000;
+            }
+          } else {
+            p.inSrs = true;
+            p.due = Date.now();
+          }
+          pendingProgress = p;
         }
-      } else {
-        p.inSrs = true;
-        p.due = Date.now();
-      }
-      await DB.commitStudy([p], [sessP]);            // v33.2 F06：单事务原子落库
-    })(), '保存失败');
+        // 重试复用同一份进度和流水 ID，不能把一次作答再累计一次。
+        await DB.commitStudy([pendingProgress], [sessP]);
+        retry.remove();
+      } catch (e) {
+        reportErr('保存失败，请重试保存或导出备份', e);
+        if (document.contains(fb) && !document.contains(retry)) fb.appendChild(retry);
+      } finally { saving = false; retry.disabled = false; }
+    };
+    retry.onclick = saveResult;
+    await saveResult();
   }
   function renderPracticeResult() {
     const total = prac.list.length;
@@ -2663,6 +2753,7 @@
 
   // ---------- 事件绑定 ----------
   function bind() {
+    $('#recoverBanks').onclick = () => safe(restoreFromRepo(), '恢复失败');
     $('#backBtn').onclick = () => {
       if (S.back === 'bank') openBank(S.bank.id);
       else {                                   // v27 修复：题库页「‹ 首页」真的切回首页（原来只重渲列表没切视图）
@@ -3028,13 +3119,21 @@
 
   // 打开失败也要把界面挂起来：无痕模式 / 浏览器不支持 IndexedDB 时，
   // 原来的写法会直接白屏且无任何提示
-  safe(DB.open(), '数据库打开失败').then((ok) => {
-    bind();
+  bind();
+  initAi();
+  safe(DB.open(), '数据库打开失败').then(async (ok) => {
     if (!ok) {
       const box = $('#bankList');
       if (box) box.innerHTML = '<div class="empty">数据库打不开，可能是浏览器无痕模式或存储被禁用。<br><span class="muted">换普通窗口打开，或允许本站存储数据后刷新</span></div>';
       return;
     }
-    safe(renderHome(), '加载题库失败');
+    await safe((async () => {
+      const result = await DB.autoBackupCheck();
+      if (result.action === 'restored') {
+        toast('已从本站自动备份恢复题库');
+        if (result.missingStores && result.missingStores.length) reportErr('旧备份内容有限', new Error('仅恢复旧备份保存的数据，不含学习流水、目标和设置；请定期导出完整备份'));
+      }
+    })(), '自动备份失败，请使用导出备份保留数据');
+    await safe(renderHome(), '加载题库失败');
   });
 })();
