@@ -30,26 +30,13 @@
     return h > 0 ? h + ':' + pad2(m) + ':' + pad2(ss) : pad2(m) + ':' + pad2(ss);
   }
   // v21：模式计时器统一管理——离开学习页 / 结束 / 重开都要停，否则 interval 泄漏
-  function stopTimer(h) {
-    if (h && h.timer) { clearInterval(h.timer); h.timer = null; }
-    // v42：暂停时累计活跃时间（排除后台/不动期间）
-    if (h && h._resumeAt) {
-      h._accumMs = (h._accumMs || 0) + (Date.now() - h._resumeAt);
-      h._resumeAt = null;
-    }
-  }
+  function stopTimer(h) { if (h && h.timer) { clearInterval(h.timer); h.timer = null; } }
   function startTimerChip(holder) {
+    // holder: prac / mem；每秒刷新 #mtTimer（元素随题目重渲重建，按 id 找）
     if (!holder || holder.timer) return;
-    if (!holder.startAt) holder.startAt = Date.now();
-    if (!holder._accumMs) holder._accumMs = 0;
-    holder._resumeAt = Date.now();   // v42：记录本轮恢复时间
     holder.timer = setInterval(() => {
       const el = $('#mtTimer');
-      if (el && holder.startAt) {
-        // v42：只计活跃时间（暂停期间不计入）
-        const ms = (holder._accumMs || 0) + (Date.now() - (holder._resumeAt || Date.now()));
-        el.textContent = '⏱ ' + fmtElapsed(ms);
-      }
+      if (el && holder.startAt) el.textContent = '⏱ ' + fmtElapsed(Date.now() - holder.startAt);
     }, 1000);
   }
 
@@ -113,27 +100,6 @@
     curView = name;
     ['home', 'bank', 'study', 'wrong'].forEach(v => $('#view-' + v).classList.toggle('hidden', v !== name));
   }
-  // v42：计时暂停——切后台或 60 秒无操作时暂停，回来继续
-  let _lastActive = Date.now();
-  document.addEventListener('visibilitychange', function () {
-    if (document.hidden) {
-      stopTimer(prac); stopTimer(mem); stopTimer(exam);
-    } else {
-      _lastActive = Date.now();
-      if (curView === 'study') {
-        if (prac && prac.list && prac.i < prac.list.length) startTimerChip(prac);
-        if (mem && mem.list && mem.i < mem.list.length) startTimerChip(mem);
-      }
-    }
-  });
-  document.addEventListener('touchstart', function () { _lastActive = Date.now(); }, { passive: true });
-  document.addEventListener('click', function () { _lastActive = Date.now(); }, { passive: true });
-  setInterval(function () {
-    if (Date.now() - _lastActive > 60000 && !document.hidden) {
-      stopTimer(prac); stopTimer(mem); stopTimer(exam);
-    }
-  }, 5000);
-
   function cleanupStudy() {
     stopTimer(exam); stopTimer(prac); stopTimer(mem);   // v21：三个模式的计时器统一停
     if (mem && mem.keyHandler) { document.removeEventListener('keydown', mem.keyHandler); mem.keyHandler = null; }   // v32 A6
@@ -165,7 +131,7 @@
     if (!banks.length) {
       list.innerHTML = '<div class="empty">还没有题库</div>' +
         '<button class="btn" id="restoreFromRepo" style="width:100%;margin-top:12px">📦 从线上仓库恢复题库</button>' +
-        '<div class="muted" style="font-size:12px;margin-top:8px;text-align:center">从 GitHub Pages 拉取之前部署的 .md 文件</div>';
+        '<div class="muted" style="font-size:12px;margin-top:8px;text-align:center">自动拉取之前部署的题库文件</div>';
       var repoBtn = document.getElementById('restoreFromRepo');
       if (repoBtn) repoBtn.onclick = function () { safe(restoreFromRepo(), '恢复失败'); };
       return;
@@ -350,124 +316,6 @@
   const CLEAN_RULES_MD = "# LEXA 题库导入规范（清洗规则·容错版 v2）\n\n> 写给 AI 或人工：把脏资料（Word/PDF/网页/笔记）整理成 LEXA 刷题 App 可导入的 Markdown。\n> **先说结论：App 的解析器有五层自动清洗和容错，以下都是「推荐写法」而非硬性要求——\n> 大方向对了就能导入，细节 App 会自动兜底。** 只有第三节的两条是硬性的。\n\n## 一、App 会自动容错的事（你不用操心）\n\n1. **水印/推广自动删**：公众号、微信号、扫码关注、更多资料、免费领取、QQ群等\n   整行自动剥离；标题尾部括号里的水印片段自动剪掉。\n2. **页眉页脚自动删**：「国际法试题 第1页(共5页)」这类短行。\n3. **考卷套话自动删**：「绝密★启用前」「注意事项：」等。\n4. **行内选项自动拆**：「A.北京 B.上海 C.广州 答案B」挤在一行也能识别。\n5. **卷尾答案自动回填**：试卷末尾集中答案区（「1.B 2.AC 3.对」）按题号自动配对。\n6. **格式随意**：CRLF/LF 换行、全角半角标点、题号 1. / 1、/ 1． / 一、 / １. 都行\n   （全角数字和字母自动归一）；选项键大小写随意（自动转大写并校验连续性）。\n7. **缺答案不丢题**：没识别到答案的题保留并标「⚠️ 没识别到答案」，可在 App 内\n   点 ✏️ 补上——所以**宁缺答案也不要编造答案**。\n8. **多级章节自动建树**：## ### #### 任意层级，背题卡自动带章节路径。\n9. **话术问答体直接导入（v2 新增）**：「1. 旅客：在哪里打车？/ 回答：您好……」\n   这种带编号的问答，**原样粘贴即可**，「回答：」自动识别为答案行。\n10. **无编号问答自动切题（v2 新增）**：整篇没有题号、只有「旅客：…/回答：…」\n    或「问：…/答：…」「Q:/A:」的访谈/话术原稿，App 自动按问答对切题加编号。\n\n## 二、推荐写法（六种题型，照抄结构即可）\n\n### 单选题 / 多选题（自动识别）\n1. 题干文字\n   A. 选项一\n   B. 选项二\n   C. 选项三\n   D. 选项四\n   答案：A\n\n（多选写「答案：ABC」；选项分行或挤一行都行。）\n\n### 判断题\n1. 题干陈述句\n   答案：对\n\n（对/错、正确/错误、√/×、T/F 都认。）\n\n### 填空题\n1. 《联合国宪章》第2条规定了（　）项原则。\n   答案：7\n\n（或直接写「……规定了（7）项原则。」；含「共N分/本大题/每小题/答题卡」的\n括号是试卷套话，自动忽略。）\n\n### 名词解释（翻卡：正面术语/背面定义）\n1. 领海：国家主权及于其陆地领土及内水以外邻接的领海……\n\n### 简答题 / 论述 / 背书问答（自评卡：先想后翻，背话术最合适）\n1. 旅客：我在这里打车，车会上来接我吗？\n   答案：您好，您可以联系司机确认……（完整话术，可多行多段）\n\n（「回答：」「答：」都行；分支情况用【】标记写进答案，如\n【如遇旅客不清楚航班】您好，……）\n\n## 三、仅有的两条硬性要求\n\n1. **纯文本 Markdown、UTF-8 编码**（Word 另存 .txt/.md 或直接粘贴文本；\n   App 不解析图片、表格、公式——转成文字描述或删除）。\n2. **题与题之间要有可切分的边界**：编号 / 问答对（旅客：/问：/Q:）二者必有其一。\n   既没编号又不是问答体的无结构大段文字，会被当成名词解释或忽略——这是唯一\n   会丢内容的坑（保底办法：给每题加个 1. 2. 3. 编号即可）。\n\n## 四、清洗源头时建议顺手做的（不做 App 也会兜）\n\n- 删掉图片/表格/公式。\n- 修正明显 OCR 乱码（同音字、断行断字）。\n- 段落按题目断行，别整篇连一行。\n\n## 五、交付自检（30 秒）\n\n- 导入后 App 首页题数 ≈ 你整理的题数（差几道去查边界缺失）。\n- 点开题库没有大片「⚠️ 没识别到答案」。\n- 目录树层级符合预期。\n\n（本规范由 LEXA App 导出生成，与当前版本解析引擎一致；解析器持续增强容错，\n新格式建议先小样试导。）\n";
 
 
-  // ---------- v45：从线上仓库恢复题库 ----------
-  // AI 安全包装（ai.js 未加载时不崩溃）
-  function _aiSafe(fn) { try { if (typeof AI !== 'undefined') fn(); } catch(e) {} }
-
-  // ---------- v46：从线上仓库恢复题库（旧版JS + .md + 备份三层） ----------
-  var _repoRestoring = false;
-  async function restoreFromRepo() {
-    if (_repoRestoring) { toast('正在恢复中…'); return; }
-    _repoRestoring = true;
-    try {
-      var total = 0;
-      total += await restoreLegacyCards();
-      total += await restoreMdFiles();
-      if (total > 0) {
-        toast('✅ 恢复了 ' + total + ' 道题');
-        renderHome();
-      } else {
-        var info = DB.getBackupInfo();
-        if (info && info.banks > 0) {
-          var ok = await DB.restoreFromLocalStorage();
-          if (ok) { toast('💾 从备份恢复了 ' + info.banks + ' 个题库'); renderHome(); return; }
-        }
-        toast('没有找到可恢复的题库数据');
-      }
-    } catch (e) { reportErr('恢复失败', e); }
-    finally { _repoRestoring = false; }
-  }
-
-  async function restoreLegacyCards() {
-    var count = 0;
-    try {
-      var resp = await fetch('./review-cards.js');
-      if (resp.ok) {
-        var code = await resp.text();
-        var cards = extractCardsArray(code, 'LAW_REVIEW');
-        if (cards && cards.length) count += await importLegacyCards(cards, '国际法复习题（旧版）');
-      }
-    } catch (e) { console.warn('[restore] review-cards:', e.message); }
-    try {
-      var resp2 = await fetch('./law-cards.js');
-      if (resp2.ok) {
-        var code2 = await resp2.text();
-        var cards2 = extractCardsArray(code2, 'LAW_CARDS');
-        if (cards2 && cards2.length) count += await importLegacyCards(cards2, '国际法框架卡（旧版）');
-      }
-    } catch (e) { console.warn('[restore] law-cards:', e.message); }
-    return count;
-  }
-
-  function extractCardsArray(code, varName) {
-    try {
-      var m = code.match(new RegExp(varName + '\\s*=\\s*\\[([\\s\\S]*?)\\];'));
-      if (!m) return null;
-      var json = m[1].replace(/\\/g, '\\\\').replace(/'/g, '"').replace(/[\r\n]+\s*/g, ' ').replace(/,\s*([\]}])/g, '$1');
-      var arr = JSON.parse('[' + json + ']');
-      return Array.isArray(arr) ? arr : null;
-    } catch (e) { return null; }
-  }
-
-  async function importLegacyCards(cards, bankName) {
-    var existing = await DB.listBanks();
-    if (existing.some(function (b) { return b.name === bankName; })) return 0;
-    var byChapter = {};
-    cards.forEach(function (c) {
-      var ch = c.chapter || '未分组';
-      (byChapter[ch] = byChapter[ch] || []).push(c);
-    });
-    var questions = [];
-    var outline = [];
-    var cid = 0;
-    Object.keys(byChapter).forEach(function (ch) {
-      var nodeId = 'ch-' + (++cid);
-      outline.push({ id: nodeId, title: ch, level: 2, children: [] });
-      byChapter[ch].forEach(function (c, idx) {
-        questions.push({
-          id: 'lg-' + cid + '-' + idx, bankId: '', type: 'term',
-          chapterId: nodeId, chapterPath: [ch], chapter: ch,
-          term: (c.front || '').replace(/^(名词解释：|简答骨架：|简答：|对比：)/, ''),
-          definition: c.back || '', stem: c.front || '', answer: c.back || '',
-          order: questions.length, explanation: c.cue || ''
-        });
-      });
-    });
-    if (!questions.length) return 0;
-    var bank = await DB.saveBank(bankName, outline);
-    try {
-      questions.forEach(function (q) { q.bankId = bank.id; });
-      await DB.addQuestions(bank.id, questions);
-      return questions.length;
-    } catch (e) {
-      await DB.deleteBank(bank.id).catch(function () {});
-      throw e;
-    }
-  }
-
-  async function restoreMdFiles() {
-    var count = 0;
-    var names = ['00247_国际法真题_带答案.md', '202410_国际法真题_带答案.md', '202504_国际法真题_带答案.md', '机场服务话术背书.md'];
-    for (var i = 0; i < names.length; i++) {
-      try {
-        var resp = await fetch('./' + encodeURIComponent(names[i]));
-        if (!resp.ok) continue;
-        var text = await resp.text();
-        if (!text || text.length < 20) continue;
-        var parsed = QuizParser.parseDocument(text);
-        if (!parsed || !parsed.questions.length) continue;
-        var bName = (parsed.name && parsed.name !== '未命名题库') ? parsed.name : names[i].replace(/\.md$/, '');
-        var existing = await DB.listBanks();
-        if (existing.some(function (b) { return b.name === bName; })) continue;
-        var bank = await DB.saveBank(bName, parsed.outline);
-        try { await DB.addQuestions(bank.id, parsed.questions); count += parsed.questions.length; }
-        catch (e) { await DB.deleteBank(bank.id).catch(function () {}); }
-      } catch (e) {}
-    }
-    return count;
-  }
-
-
   // ---------- v40：学习报告（首页周报卡） ----------
   async function renderStudyReport() {
     const box = $('#studyReport'); if (!box) return;
@@ -525,6 +373,106 @@
     S.pool = pool; S.mixed = false;
     const label = [wrongQs.length ? '错题' + wrongQs.length : '', dueQs.length ? '到期' + dueQs.length : '', sampleQs.length ? '抽查' + sampleQs.length : ''].filter(Boolean).join('+');
     startPractice({ title: '🏃冲刺(' + label + ')', order: 'rand' });
+  }
+
+
+  // ---------- v47：从线上仓库恢复题库 ----------
+  var _repoRestoring = false;
+  async function restoreFromRepo() {
+    if (_repoRestoring) { toast('正在恢复中…'); return; }
+    _repoRestoring = true;
+    try {
+      var total = 0;
+      total += await restoreLegacyCards();
+      total += await restoreMdFiles();
+      if (total > 0) { toast('✅ 恢复了 ' + total + ' 道题'); renderHome(); }
+      else { toast('没有找到可恢复的题库数据'); }
+    } catch (e) { reportErr('恢复失败', e); }
+    finally { _repoRestoring = false; }
+  }
+  async function restoreLegacyCards() {
+    var count = 0;
+    try {
+      var resp = await fetch('./review-cards.js');
+      if (resp.ok) {
+        var code = await resp.text();
+        var cards = extractCardsArray(code, 'LAW_REVIEW');
+        if (cards && cards.length) count += await importCards(cards, '国际法复习题');
+      }
+    } catch (e) {}
+    try {
+      var r2 = await fetch('./law-cards.js');
+      if (r2.ok) {
+        var c2 = await r2.text();
+        var cards2 = extractCardsArray(c2, 'LAW_CARDS');
+        if (cards2 && cards2.length) count += await importCards(cards2, '国际法框架卡');
+      }
+    } catch (e) {}
+    return count;
+  }
+  function extractCardsArray(code, name) {
+    try {
+      var idx = code.indexOf(name);
+      if (idx < 0) return null;
+      var bracketStart = code.indexOf('[', idx);
+      if (bracketStart < 0) return null;
+      var depth = 0;
+      for (var i = bracketStart; i < code.length; i++) {
+        if (code[i] === '[') depth++;
+        else if (code[i] === ']') { depth--; if (depth === 0) break; }
+      }
+      if (depth !== 0) return null;
+      var body = code.slice(bracketStart, i + 1);
+      var fn = new Function('return ' + body + ';');
+      var arr = fn();
+      return Array.isArray(arr) ? arr : null;
+    } catch (e) { return null; }
+  }
+  async function importCards(cards, bankName) {
+    var existing = await DB.listBanks();
+    if (existing.some(function (b) { return b.name === bankName; })) return 0;
+    var byCh = {};
+    cards.forEach(function (c) { var ch = c.chapter || '未分组'; (byCh[ch] = byCh[ch] || []).push(c); });
+    var qs = [], outline = [], cid = 0;
+    Object.keys(byCh).forEach(function (ch) {
+      var nid = 'ch-' + (++cid);
+      outline.push({ id: nid, title: ch, level: 2, children: [] });
+      byCh[ch].forEach(function (c, i) {
+        qs.push({ id: 'lg' + cid + '-' + i, bankId: '', type: 'term',
+          chapterId: nid, chapterPath: [ch], chapter: ch,
+          term: (c.front || '').replace(/^(名词解释：|简答骨架：|简答：|对比：)/, ''),
+          definition: c.back || '', stem: c.front || '', answer: c.back || '',
+          order: qs.length, explanation: c.cue || '' });
+      });
+    });
+    if (!qs.length) return 0;
+    var bank = await DB.saveBank(bankName, outline);
+    try {
+      qs.forEach(function (q) { q.bankId = bank.id; });
+      await DB.addQuestions(bank.id, qs);
+      return qs.length;
+    } catch (e) { await DB.deleteBank(bank.id).catch(function () {}); throw e; }
+  }
+  async function restoreMdFiles() {
+    var count = 0;
+    var names = ['00247_国际法真题_带答案.md', '202410_国际法真题_带答案.md', '202504_国际法真题_带答案.md', '机场服务话术背书.md'];
+    for (var i = 0; i < names.length; i++) {
+      try {
+        var r = await fetch('./' + encodeURIComponent(names[i]));
+        if (!r.ok) continue;
+        var text = await r.text();
+        if (!text || text.length < 20) continue;
+        var parsed = QuizParser.parseDocument(text);
+        if (!parsed || !parsed.questions.length) continue;
+        var bn = (parsed.name && parsed.name !== '未命名题库') ? parsed.name : names[i].replace(/\.md$/, '');
+        var ex = await DB.listBanks();
+        if (ex.some(function (b) { return b.name === bn; })) continue;
+        var bank = await DB.saveBank(bn, parsed.outline);
+        try { await DB.addQuestions(bank.id, parsed.questions); count += parsed.questions.length; }
+        catch (e) { await DB.deleteBank(bank.id).catch(function () {}); }
+      } catch (e) {}
+    }
+    return count;
   }
 
   // ---------- v31：跨库刷题（多题库混合 + 题型筛选） ----------
@@ -1405,26 +1353,24 @@
     // v28：卡片带章节路径面包屑（背书场景一眼知道在背哪个岗位的话术）
     const chapterLine = (q.chapterPath && q.chapterPath.length)
       ? `<div class="card-chapter">📖 ${esc(q.chapterPath.join(' › '))}</div>` : '';
-    // v42：去掉背面题目回显——正面刚看过，背面只放答案（不重复）
+    // v28：答案面把题目再显示一遍——翻面后不用来回翻就能对着问题背答案
+    const stemMini = (q.type === 'term')
+      ? `<div class="card-stem-mini">${esc(q.term)}</div>`
+      : `<div class="card-stem-mini">${esc(q.stem)}</div>`;
     let front = '', back = '';
     if (q.type === 'term') {
-      front = `${chapterLine}<div class="tag">名词解释</div><div class="stem">${esc(q.term)}</div>`;
+      front = `<div class="tag">名词解释</div><div class="stem">${esc(q.term)}</div>`;
       back = `<div class="def">${esc(q.definition) || '<span class="muted">（无定义）</span>'}</div>`;
     } else if (q.type === 'judge') {
-      front = `${chapterLine}<div class="tag">判断题</div><div class="stem">${esc(q.stem)}</div>`;
+      front = `<div class="tag">判断题</div><div class="stem">${esc(q.stem)}</div>`;
       back = ansBanner(q, null) + `<div class="def" style="font-size:15px">答案：${q.answer ? '✓ 对' : '✗ 错'}</div>`;
     } else {
-      front = `${chapterLine}<div class="tag">${TYPE_LABEL[q.type]}</div><div class="stem">${esc(q.stem)}</div>` +
+      front = `<div class="tag">${TYPE_LABEL[q.type]}</div><div class="stem">${esc(q.stem)}</div>` +
         (q.options || []).map(o => `<div class="opt">${esc(o.key)}. ${esc(o.text)}</div>`).join('');
       // 走 scoring：answer 是字符串 / undefined 时 .map 会直接崩掉整个背题页
-      // v42：客观题保留横幅+选项文字；主观题直接显示答案内容（不再套横幅）
-      if (q.type === 'single' || q.type === 'multiple' || q.type === 'judge') {
-        back = ansBanner(q, null) + `<div class="def" style="font-size:14px">${esc(Scoring.answerText(q))}</div>`;
-      } else if (q.type === 'fill') {
-        back = ansBanner(q, null) + `<div class="def" style="font-size:14px">${esc(Scoring.answerText(q))}</div>`;
-      } else {
-        back = `<div class="def">${esc(Scoring.answerText(q))}</div>`;
-      }
+      back = (q.type === 'single' || q.type === 'multiple' || q.type === 'judge' || q.type === 'fill')
+        ? ansBanner(q, null) + `<div class="def" style="font-size:15px">${esc(Scoring.answerText(q))}</div>`
+        : `<div class="def">答案：${esc(Scoring.answerText(q))}</div>`;
     }
     if (q.explanation) back += `<div class="exp">解析：${esc(q.explanation)}</div>`;
     // v14：真 3D 翻转结构 —— 正反面同时渲染、grid 叠放，翻面只是加 .flipped 转 180°
@@ -1436,8 +1382,8 @@
       `<div class="study-body slide-in">` +
       `<div class="flip3d" id="card">` +
         `<div class="flip3d-inner">` +
-          `<div class="flip-face flip-front">${front}</div>` +
-          `<div class="flip-face flip-back"><div class="tag">答案</div>${back}${aiButtons(q, 'memorize')}</div>` +
+          `<div class="flip-face flip-front">${chapterLine}${front}</div>` +
+          `<div class="flip-face flip-back">${chapterLine}<div class="tag">答案</div>${stemMini}${back}</div>` +
         `</div>` +
       `</div>` +
       `<div class="flip-hint" id="flipHint">点击卡片或下方按钮翻面看答案</div>` +
@@ -1597,35 +1543,6 @@
       else if (flipped && (k === 'z' || k === 'Z')) { e.preventDefault(); safe(doUndo(), '撤销失败'); }
     };
     document.addEventListener('keydown', mem.keyHandler);
-
-    // v42：滑动切题
-    const c3d = $('#card');
-    if (c3d) {
-      let tx = 0, ty = 0, sw = false;
-      c3d.addEventListener('touchstart', function (e) {
-        tx = e.touches[0].clientX; ty = e.touches[0].clientY; sw = true;
-      }, { passive: true });
-      c3d.addEventListener('touchend', function (e) {
-        if (!sw) return; sw = false;
-        const dx = e.changedTouches[0].clientX - tx;
-        const dy = e.changedTouches[0].clientY - ty;
-        if (Math.abs(dx) < 60 || Math.abs(dx) < Math.abs(dy)) return;
-        if (mem.locked) return;
-        mem.locked = true;
-        SFX.flip();
-        const el = $('#card');
-        if (el) el.classList.add(dx < 0 ? 'swipe-next' : 'swipe-prev');
-        setTimeout(function () {
-          if (dx < 0) {
-            if (!flipped && !reviewing) mem.skippedN = (mem.skippedN || 0) + 1;
-            mem.i++;
-          } else if (dx > 0 && mem.i > 0) {
-            mem.review = true; mem.i--;
-          }
-          renderMemorize();
-        }, 200);
-      }, { passive: true });
-    }
   }
 
   // ---------- 刷题模式 ----------
@@ -1673,21 +1590,12 @@
 
     // 自评题：名词解释 / 简答 / 答案过长的填空 —— 看答案后自己判断会/不会
     if (Scoring.isSelfAssess(q)) {
-      const label = q.type === 'fill' ? '填空题（答案较长）' : TYPE_LABEL[q.type];
+      const label = q.type === 'fill' ? '填空题（答案较长，自评）' : TYPE_LABEL[q.type];
       const front = (q.type === 'term') ? q.term : q.stem;
-      const hasAi = aiAvailable();
       body = `<div class="tag" style="display:inline-block;font-size:12px;padding:3px 10px;border-radius:999px;background:var(--primary);color:#fff;margin-bottom:12px">${esc(label)}</div>
-        <div class="q-stem">${esc(front)}</div>` +
-        (hasAi ?
-          `<textarea id="aiAnswerInput" class="ai-answer-input" placeholder="输入你的答案（或点🎤语音输入），AI 帮你判分" rows="4"></textarea>
-           <div class="btn-row" style="margin-top:10px">
-             <button class="btn" id="aiGradeBtn">🤖 AI 判题</button>
-             <button class="btn secondary" id="voiceBtn">🎤 语音</button>
-             <button class="btn ghost" id="revealTerm">看答案自评</button>
-           </div>
-           <div id="aiGradeResult" class="hidden" style="margin-top:12px"></div>` :
-          `<button class="btn" id="revealTerm">显示答案</button>`) +
-        `<div id="termBack" class="hidden" style="margin-top:14px">
+        <div class="q-stem">${esc(front)}</div>
+        <button class="btn" id="revealTerm">显示答案</button>
+        <div id="termBack" class="hidden" style="margin-top:14px">
           <div class="feedback ok" style="white-space:pre-wrap">${esc(Scoring.answerText(q))}</div>
           <div class="btn-row" style="margin-top:14px">
             <button class="btn rate-know" id="tRight">答对了</button>
@@ -1739,84 +1647,11 @@
 
     // 自评题（名词解释 / 简答 / 长答案填空）
     if (Scoring.isSelfAssess(q)) {
-      // v43：AI 判题
-      const gradeBtn = $('#aiGradeBtn');
-      if (gradeBtn) {
-        gradeBtn.onclick = () => {
-          const inp = $('#aiAnswerInput');
-          const answer = (inp ? inp.value : '').trim();
-          if (!answer) { toast('先输入你的答案'); return; }
-          const result = $('#aiGradeResult');
-          result.classList.remove('hidden');
-          result.innerHTML = '<div style="text-align:center;padding:16px;color:var(--muted)">🤖 AI 阅卷中…</div>';
-          AI.grade(q, answer).then(function (text) {
-            const first = text.split(String.fromCharCode(10))[0].trim();
-            const isRight = first === '对';
-            const isHalf = first === '半对';
-            result.innerHTML = '<div class="feedback ' + (isRight ? 'ok' : isHalf ? '' : 'bad') + '" style="white-space:pre-wrap">' +
-              esc(text) + '</div>' +
-              '<div class="btn-row" style="margin-top:12px">' +
-              '<button class="btn ' + (isRight ? 'rate-know' : 'rate-forget') + '" id="aiConfirm">' +
-              (isRight ? '✓ 算对' : isHalf ? '◐ 算半对' : '✗ 算错') + '</button>' +
-              '<button class="btn ghost" id="aiOverride">' + (isRight ? '改判错' : '改判对') + '</button></div>';
-            $('#aiConfirm').onclick = () => finishPractice(q, isRight, answer);
-            $('#aiOverride').onclick = () => finishPractice(q, !isRight, answer);
-            // 显示标准答案供对比
-            $('#termBack').classList.remove('hidden');
-            $('#revealTerm') && $('#revealTerm').classList.add('hidden');
-          }).catch(function (e) {
-            result.innerHTML = '<div class="feedback bad">❌ ' + esc(e.message) + '</div>' +
-              '<button class="btn secondary" style="margin-top:8px" id="fallbackSelf">改为自评</button>';
-            $('#fallbackSelf').onclick = () => {
-              result.classList.add('hidden');
-              $('#termBack').classList.remove('hidden');
-              $('#revealTerm') && $('#revealTerm').classList.add('hidden');
-            };
-            $('#termBack').classList.remove('hidden');
-            $('#revealTerm') && $('#revealTerm').classList.add('hidden');
-          });
-        };
-      }
-      // v43：语音输入（Web Speech API）
-      const voiceBtn = $('#voiceBtn');
-      if (voiceBtn) {
-        voiceBtn.onclick = function () {
-          const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
-          if (!SR) { toast('此浏览器不支持语音，请直接打字'); return; }
-          const rec = new SR();
-          rec.lang = 'zh-CN';
-          rec.interimResults = true;
-          rec.continuous = false;
-          const inp = $('#aiAnswerInput');
-          voiceBtn.textContent = '🔴 说话中…';
-          voiceBtn.style.background = 'var(--bad)';
-          rec.onresult = function (e) {
-            let text = '';
-            for (let i = 0; i < e.results.length; i++) text += e.results[i][0].transcript;
-            if (inp) inp.value = text;
-          };
-          rec.onend = function () {
-            voiceBtn.textContent = '🎤 语音';
-            voiceBtn.style.background = '';
-            if (inp && inp.value.trim()) toast('已识别，点「AI 判题」提交');
-          };
-          rec.onerror = function () {
-            voiceBtn.textContent = '🎤 语音';
-            voiceBtn.style.background = '';
-            toast('语音识别失败，请重试');
-          };
-          rec.start();
-        };
-      }
-      // 自评兜底（没 AI 或 AI 失败时）
-      const revealBtn = $('#revealTerm');
-      if (revealBtn) {
-        revealBtn.onclick = () => {
-          $('#termBack').classList.remove('hidden'); revealBtn.classList.add('hidden');
-          $('#tRight').onclick = () => finishPractice(q, true, (document.querySelector('#aiAnswerInput') || {}).value || '自评');
-          $('#tWrong').onclick = () => finishPractice(q, false, (document.querySelector('#aiAnswerInput') || {}).value || '自评');
-        };
-      }
+      $('#revealTerm').onclick = () => {
+        $('#termBack').classList.remove('hidden'); $('#revealTerm').classList.add('hidden');
+        $('#tRight').onclick = () => finishPractice(q, true, '自评');
+        $('#tWrong').onclick = () => finishPractice(q, false, '自评');
+      };
       return;
     }
     // v39 P2-1：填空题回看——已答题只能看不能再做
@@ -1876,7 +1711,7 @@
         if (!picked.size) { toast('至少选一个选项'); return; }
         const keys = Array.from(picked);
         opts.forEach(o => o.classList.add('locked'));
-        confirmBtn.remove();   // v41.1 修：确认后直接移除按钮（disabled 仍占位挡住下一题）
+        confirmBtn.disabled = true;
         const right = Scoring.isRight(q, keys);
         const correctKeys = Scoring.answerKeys(q);
         opts.forEach(o => {
@@ -1967,95 +1802,6 @@
       (txt && txt.length <= 90 ? '<span class="ans-txt">' + txt + '</span>' : '') + '</div>';
   }
 
-
-  // ---------- v41：AI 助手 ----------
-  function aiAvailable() { return typeof AI !== 'undefined' && AI.hasKey(); }
-  function aiButtons(q, mode) {
-    if (!aiAvailable()) return '';
-    var btns = '';
-    if (mode === 'practice') {
-      btns += '<button class="ai-btn" data-ai="explain" data-qid="' + esc(q.id) + '">🧠 解析</button>';
-    }
-    btns += '<button class="ai-btn" data-ai="mnemonic" data-qid="' + esc(q.id) + '">💡 巧计</button>';
-    btns += '<button class="ai-btn" data-ai="related" data-qid="' + esc(q.id) + '">🔗 关联</button>';
-    return '<div class="ai-btn-row">' + btns + '</div><div id="aiResult" class="ai-result hidden"></div>';
-  }
-  function showAiResult(title, content, relatedItems) {
-    var el = $('#aiResult');
-    if (!el) return;
-    var html = '<div class="ai-result-card"><div class="ai-result-title">' + esc(title) + '</div><div class="ai-result-body">' + esc(content).split(chr(10)).join('<br>') + '</div>';
-    if (relatedItems && relatedItems.length) {
-      html += '<div class="ai-related-list"><div style="font-weight:700;font-size:13px;margin:8px 0 4px">🔗 关联题（点击跳转）：</div>';
-      relatedItems.forEach(function (item) {
-        html += '<button class="ai-related-item" data-jump="' + esc(item.q.id) + '">' + esc((item.q.stem || item.q.term || '').slice(0, 36)) + '…</button>';
-      });
-      html += '</div>';
-    }
-    html += '</div>';
-    el.innerHTML = html;
-    el.classList.remove('hidden');
-    el.querySelectorAll('[data-jump]').forEach(function (btn) {
-      btn.onclick = function () {
-        var tid = btn.dataset.jump;
-        if (prac && prac.list) {
-          var idx = prac.list.findIndex(function (x) { return x.id === tid; });
-          if (idx >= 0) { prac.i = idx; renderPractice(); }
-          else {
-            var tq = S.questions.find(function (x) { return x.id === tid; });
-            if (tq) { prac.list.splice(prac.i + 1, 0, tq); toast('已插入，下一题可见'); }
-          }
-        }
-      };
-    });
-  }
-  function handleAiClick(type, qid) {
-    var q = S.questions.find(function (x) { return x.id === qid; }) || (prac && prac.list || []).find(function (x) { return x.id === qid; });
-    if (!q) return;
-    var el = $('#aiResult');
-    if (el) { el.classList.remove('hidden'); el.innerHTML = '<div style="text-align:center;padding:16px;color:var(--muted)">🤔 AI 思考中…</div>'; }
-    var handler = function (promise, title) {
-      promise.then(function (t) { showAiResult(title, t); })
-        .catch(function (e) {
-          console.error('[AI]', type, e);
-          showAiResult('❌ 出错了', (e.message || '请求失败') + ' — 请检查网络和 API Key，稍后重试');
-        });
-    };
-    if (type === 'explain') handler(AI.explain(q), '🧠 AI 解析');
-    else if (type === 'mnemonic') handler(AI.mnemonic(q), '💡 巧计');
-    else if (type === 'related') {
-      AI.searchRelated(q, S.questions).then(function (r) {
-        showAiResult('🔗 关联（' + r.keywords.join('、') + '）', r.items.length ? '找到' + r.items.length + '道：' : '无紧密关联题', r.items);
-      }).catch(function (e) { showAiResult('❌ 出错了', String(e.message || e)); });
-    }
-  }
-  function openAiChat() {
-    if (typeof AI === 'undefined') { toast('AI 功能未启用'); return; }
-    $('#aiChatModal').classList.remove('hidden');
-    var log = $('#aiChatLog');
-    if (!log.children.length) log.innerHTML = '<div class="ai-msg ai-msg-bot">你好！有什么法律概念不懂的随时问 👋</div>';
-    $('#aiChatInput').focus();
-  }
-  function sendAiChat() {
-    if (typeof AI === 'undefined') return;
-    var input = $('#aiChatInput');
-    var msg = input.value.trim();
-    if (!msg) return;
-    input.value = '';
-    var log = $('#aiChatLog');
-    log.insertAdjacentHTML('beforeend', '<div class="ai-msg ai-msg-user">' + esc(msg) + '</div>');
-    log.insertAdjacentHTML('beforeend', '<div class="ai-msg ai-msg-bot" id="aiThink">🤔 思考中…</div>');
-    log.scrollTop = log.scrollHeight;
-    var ctx = (prac && prac.list && prac.list[prac.i]) || (mem && mem.list && mem.list[mem.i]) || null;
-    AI.tutor(msg, ctx).then(function (r) {
-      var t = $('#aiThink');
-      if (t) t.outerHTML = '<div class="ai-msg ai-msg-bot">' + esc(r).split(String.fromCharCode(10)).join('<br>') + '</div>';
-      log.scrollTop = log.scrollHeight;
-    }).catch(function (e) {
-      var t = $('#aiThink');
-      if (t) t.outerHTML = '<div class="ai-msg ai-msg-bot">❌ ' + esc(e.message) + '</div>';
-    });
-  }
-
   async function finishPractice(q, right, picked) {
     // v38 #4：幂等——同一题本轮只允许一次有效提交（双击/回看/异步竞态全挡住）
     if (prac.results[prac.i] && prac.results[prac.i] !== 'skip') return;
@@ -2069,7 +1815,6 @@
     if (!Scoring.hasAnswer(q)) {
       html += `<div class="muted" style="margin-top:6px;font-size:13px">⚠️ 这道题没识别到答案，已按「答错」计，建议导出后手工补上</div>`;
     }
-    html += aiButtons(q, 'practice');
     fb.innerHTML = html;
     if (right) prac.correct++; else prac.wrongIds.push(q.id);
     // v28：记作答记录（回看用）；回看补答跳过的题要把它从跳过清单里捞回来
@@ -3156,55 +2901,6 @@
     });
     $('#goalModalClose').onclick = () => $('#goalModal').classList.add('hidden');
     $('#goalModal').onclick = (e) => { if (e.target === $('#goalModal')) $('#goalModal').classList.add('hidden'); };
-    // v41：AI 事件（ai.js 不可用时安全跳过）
-    var _aiOK = typeof AI !== 'undefined' && AI;
-    if (!_aiOK) console.warn('[AI] ai.js 未加载，跳过 AI 功能');
-    // （以下 AI 绑定仅当 _aiOK 时执行）
-    document.addEventListener('click', function (e) {
-      var btn = e.target.closest('.ai-btn');
-      if (btn) if (typeof AI !== 'undefined') handleAiClick(btn.dataset.ai, btn.dataset.qid);
-    });
-    const aiF = $('#aiFloatBtn');
-    if (aiF) {
-      aiF.onclick = openAiChat;
-      if (typeof AI !== 'undefined' && AI.hasKey()) aiF.classList.remove('hidden');
-    }
-    const acc = $('#aiChatClose'); if (acc) acc.onclick = () => $('#aiChatModal').classList.add('hidden');
-    const acm = $('#aiChatModal'); if (acm) acm.onclick = (e) => { if (e.target === acm) acm.classList.add('hidden'); };
-    const acs = $('#aiChatSend'); if (acs) acs.onclick = sendAiChat;
-    const aci = $('#aiChatInput'); if (aci) aci.onkeydown = (e) => { if (e.key === 'Enter') sendAiChat(); };
-    const aiKI = $('#aiKeyInput');
-    if (aiKI) {
-      try { aiKI.value = AI.getKey(); } catch(e) { aiKI.value = ''; }
-      const aiPI = $('#aiProxyInput');
-      if (aiPI) {
-        aiPI.value = AI.getProxy();
-        aiPI.addEventListener('change', function() {
-          AI.setProxy(aiPI.value);
-          localStorage.removeItem('ai-mode');   // 清除记忆，重新探测
-          toast(aiPI.value ? '代理已保存' : '已清除代理（自动模式）');
-        });
-      }
-      const syncSt = () => {
-        const st = $('#aiStatus');
-        if (AI.hasKey()) { st.textContent = '✅ 已配置（' + AI.getModel() + '）'; st.style.color = 'green'; aiF && aiF.classList.remove('hidden'); }
-        else { st.textContent = '未配置'; st.style.color = ''; aiF && aiF.classList.add('hidden'); }
-      };
-      syncSt();
-      $('#aiSaveBtn').onclick = () => { _aiSafe(function(){ AI.setKey(aiKI.value); }); syncSt(); toast(AI.hasKey() ? '已保存' : 'Key 为空'); };
-      $('#aiTestBtn').onclick = () => {
-        _aiSafe(function(){ AI.setKey(aiKI.value); }); syncSt();
-        if (!AI.hasKey()) { toast('请先填 Key'); return; }
-        const b = $('#aiTestBtn'); b.textContent = '测试中…'; b.disabled = true;
-        AI.testConnection().then(() => { b.textContent = '✅ 成功'; b.disabled = false; setTimeout(() => b.textContent = '测试连接', 2000); })
-          .catch(e => { b.textContent = '❌ ' + (e.message || '').slice(0, 12); b.disabled = false; setTimeout(() => b.textContent = '测试连接', 3000); });
-      };
-      $('#aiModelSeg').querySelectorAll('button').forEach(b => b.onclick = () => {
-        $('#aiModelSeg').querySelectorAll('button').forEach(x => x.classList.toggle('on', x === b));
-        AI.setModel(b.dataset.v); syncSt();
-      });
-    }
-
     const spBtn = $('#sprintBtn');
     if (spBtn) spBtn.onclick = () => safe(startSprint(), '冲刺失败');
     const wExp = $('#wrongExport');
@@ -3340,15 +3036,5 @@
       return;
     }
     safe(renderHome(), '加载题库失败');
-    // v45：自动备份/恢复
-    safe((async () => {
-      var result = await DB.autoBackupCheck();
-      if (result.action === 'restored') {
-        toast('💾 已从自动备份恢复 ' + result.info.banks + ' 个题库（' + result.info.questions + ' 题）');
-        renderHome();
-      } else if (result.action === 'backed-up') {
-        console.log('[backup] 每日备份完成', result.info);
-      }
-    })(), '自动备份失败');
   });
 })();
