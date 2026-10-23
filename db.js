@@ -1233,6 +1233,68 @@
     return out;
   }
 
+  // ---------- v45：自动备份 ----------
+  var BACKUP_KEY = 'auto-backup';
+  var BACKUP_DATE_KEY = 'auto-backup-date';
+
+  async function backupToLocalStorage() {
+    try {
+      var banks = await reqP((await tx('banks', 'readonly')).getAll());
+      var questions = await reqP((await tx('questions', 'readonly')).getAll());
+      var progress = await reqP((await tx('progress', 'readonly')).getAll());
+      var json = JSON.stringify({ banks: banks, questions: questions, progress: progress, savedAt: Date.now() });
+      if (json.length > 4 * 1024 * 1024) return false;
+      localStorage.setItem(BACKUP_KEY, json);
+      localStorage.setItem(BACKUP_DATE_KEY, String(Date.now()));
+      return true;
+    } catch (e) { return false; }
+  }
+
+  function getBackupInfo() {
+    try {
+      var json = localStorage.getItem(BACKUP_KEY);
+      if (!json) return null;
+      var d = JSON.parse(json);
+      return { banks: (d.banks || []).length, questions: (d.questions || []).length, savedAt: d.savedAt || 0 };
+    } catch (e) { return null; }
+  }
+
+  async function restoreFromLocalStorage() {
+    try {
+      var json = localStorage.getItem(BACKUP_KEY);
+      if (!json) return false;
+      var d = JSON.parse(json);
+      if (!d.banks || !d.banks.length) return false;
+      var db = await open();
+      var t = db.transaction(['banks', 'questions', 'progress'], 'readwrite');
+      var bs = t.objectStore('banks'), qs = t.objectStore('questions'), ps = t.objectStore('progress');
+      var existing = await reqP(bs.count());
+      if (existing > 0) return false;   // 只在空库时恢复
+      d.banks.forEach(function (b) { bs.put(b); });
+      (d.questions || []).forEach(function (q) { qs.put(q); });
+      (d.progress || []).forEach(function (p2) { ps.put(p2); });
+      await txDone(t);
+      return true;
+    } catch (e) { return false; }
+  }
+
+  async function autoBackupCheck() {
+    var banks = await reqP((await tx('banks', 'readonly')).getAll());
+    if (!banks.length) {
+      var restored = await restoreFromLocalStorage();
+      if (restored) return { action: 'restored', info: getBackupInfo() };
+      return { action: 'none' };
+    }
+    var last = localStorage.getItem(BACKUP_DATE_KEY);
+    var today = new Date().toDateString();
+    var lastDay = last ? new Date(parseInt(last)).toDateString() : '';
+    if (today !== lastDay) {
+      var ok = await backupToLocalStorage();
+      if (ok) return { action: 'backed-up', info: getBackupInfo() };
+    }
+    return { action: 'none' };
+  }
+
   return {
     open, saveBank, listBanks, getBank, deleteBank, renameBank, sanitizeOutline,
     addQuestions, listQuestions, updateQuestion,
@@ -1244,6 +1306,7 @@
     dayKey, aggTotals, dailyCounts, streakDays, streakForgiving,
     chapterAccuracy, weakChapters, weakPack, outlineMastery,
     commitStudy, undoStudy,
+    backupToLocalStorage, restoreFromLocalStorage, getBackupInfo, autoBackupCheck,
     dumpAll, restoreAll,
     mergeProgressRecords, pickBankRecord, planMerge, mergeAll,
     saveGoal, listGoals, deleteGoal, goalProgress, planExamGoals, mergeGoals,

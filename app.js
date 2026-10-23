@@ -163,7 +163,11 @@
     safe(renderStudyReport(), '加载学习报告失败');
     const list = $('#bankList');
     if (!banks.length) {
-      list.innerHTML = '<div class="empty">还没有题库，导入一个 .md / .txt 开始吧 👆</div>';
+      list.innerHTML = '<div class="empty">还没有题库</div>' +
+        '<button class="btn" id="restoreFromRepo" style="width:100%;margin-top:12px">📦 从线上仓库恢复题库</button>' +
+        '<div class="muted" style="font-size:12px;margin-top:8px;text-align:center">从 GitHub Pages 拉取之前部署的 .md 文件</div>';
+      var repoBtn = document.getElementById('restoreFromRepo');
+      if (repoBtn) repoBtn.onclick = function () { safe(restoreFromRepo(), '恢复失败'); };
       return;
     }
     list.innerHTML = '';
@@ -345,6 +349,52 @@
   // 容错口径：文档强调「推荐写法+自动容错」，不是要求一字不差（用户明确要求）
   const CLEAN_RULES_MD = "# LEXA 题库导入规范（清洗规则·容错版 v2）\n\n> 写给 AI 或人工：把脏资料（Word/PDF/网页/笔记）整理成 LEXA 刷题 App 可导入的 Markdown。\n> **先说结论：App 的解析器有五层自动清洗和容错，以下都是「推荐写法」而非硬性要求——\n> 大方向对了就能导入，细节 App 会自动兜底。** 只有第三节的两条是硬性的。\n\n## 一、App 会自动容错的事（你不用操心）\n\n1. **水印/推广自动删**：公众号、微信号、扫码关注、更多资料、免费领取、QQ群等\n   整行自动剥离；标题尾部括号里的水印片段自动剪掉。\n2. **页眉页脚自动删**：「国际法试题 第1页(共5页)」这类短行。\n3. **考卷套话自动删**：「绝密★启用前」「注意事项：」等。\n4. **行内选项自动拆**：「A.北京 B.上海 C.广州 答案B」挤在一行也能识别。\n5. **卷尾答案自动回填**：试卷末尾集中答案区（「1.B 2.AC 3.对」）按题号自动配对。\n6. **格式随意**：CRLF/LF 换行、全角半角标点、题号 1. / 1、/ 1． / 一、 / １. 都行\n   （全角数字和字母自动归一）；选项键大小写随意（自动转大写并校验连续性）。\n7. **缺答案不丢题**：没识别到答案的题保留并标「⚠️ 没识别到答案」，可在 App 内\n   点 ✏️ 补上——所以**宁缺答案也不要编造答案**。\n8. **多级章节自动建树**：## ### #### 任意层级，背题卡自动带章节路径。\n9. **话术问答体直接导入（v2 新增）**：「1. 旅客：在哪里打车？/ 回答：您好……」\n   这种带编号的问答，**原样粘贴即可**，「回答：」自动识别为答案行。\n10. **无编号问答自动切题（v2 新增）**：整篇没有题号、只有「旅客：…/回答：…」\n    或「问：…/答：…」「Q:/A:」的访谈/话术原稿，App 自动按问答对切题加编号。\n\n## 二、推荐写法（六种题型，照抄结构即可）\n\n### 单选题 / 多选题（自动识别）\n1. 题干文字\n   A. 选项一\n   B. 选项二\n   C. 选项三\n   D. 选项四\n   答案：A\n\n（多选写「答案：ABC」；选项分行或挤一行都行。）\n\n### 判断题\n1. 题干陈述句\n   答案：对\n\n（对/错、正确/错误、√/×、T/F 都认。）\n\n### 填空题\n1. 《联合国宪章》第2条规定了（　）项原则。\n   答案：7\n\n（或直接写「……规定了（7）项原则。」；含「共N分/本大题/每小题/答题卡」的\n括号是试卷套话，自动忽略。）\n\n### 名词解释（翻卡：正面术语/背面定义）\n1. 领海：国家主权及于其陆地领土及内水以外邻接的领海……\n\n### 简答题 / 论述 / 背书问答（自评卡：先想后翻，背话术最合适）\n1. 旅客：我在这里打车，车会上来接我吗？\n   答案：您好，您可以联系司机确认……（完整话术，可多行多段）\n\n（「回答：」「答：」都行；分支情况用【】标记写进答案，如\n【如遇旅客不清楚航班】您好，……）\n\n## 三、仅有的两条硬性要求\n\n1. **纯文本 Markdown、UTF-8 编码**（Word 另存 .txt/.md 或直接粘贴文本；\n   App 不解析图片、表格、公式——转成文字描述或删除）。\n2. **题与题之间要有可切分的边界**：编号 / 问答对（旅客：/问：/Q:）二者必有其一。\n   既没编号又不是问答体的无结构大段文字，会被当成名词解释或忽略——这是唯一\n   会丢内容的坑（保底办法：给每题加个 1. 2. 3. 编号即可）。\n\n## 四、清洗源头时建议顺手做的（不做 App 也会兜）\n\n- 删掉图片/表格/公式。\n- 修正明显 OCR 乱码（同音字、断行断字）。\n- 段落按题目断行，别整篇连一行。\n\n## 五、交付自检（30 秒）\n\n- 导入后 App 首页题数 ≈ 你整理的题数（差几道去查边界缺失）。\n- 点开题库没有大片「⚠️ 没识别到答案」。\n- 目录树层级符合预期。\n\n（本规范由 LEXA App 导出生成，与当前版本解析引擎一致；解析器持续增强容错，\n新格式建议先小样试导。）\n";
 
+
+  // ---------- v45：从线上仓库恢复题库 ----------
+  async function restoreFromRepo() {
+    toast('正在从线上拉取题库…');
+    // 常见题库文件名列表（用户部署在 GitHub Pages 的 .md 文件）
+    // 后续可通过 banks.json 清单扩展
+    var candidates = [
+      '00247国际法历年真题.md', '国际法.md', '题库.md', '背书.md',
+      '机场服务话术背书.md', '国际法刷题.md', '国际法真题.md'
+    ];
+    var imported = 0;
+    for (var i = 0; i < candidates.length; i++) {
+      try {
+        var resp = await fetch('./' + encodeURIComponent(candidates[i]));
+        if (!resp.ok) continue;
+        var text = await resp.text();
+        if (!text || text.length < 20) continue;
+        var parsed = QuizParser.parseDocument(text);
+        if (!parsed || !parsed.questions.length) continue;
+        var bankName = parsed.name || candidates[i].replace(/\.md$/, '');
+        // 检查是否已导入
+        var existing = await DB.listBanks();
+        var already = existing.some(function (b) { return b.name === bankName; });
+        if (already) continue;
+        var bank = await DB.saveBank(bankName, parsed.outline);
+        await DB.addQuestions(bank.id, parsed.questions);
+        imported++;
+      } catch (e) { /* 单个文件失败不影响其他 */ }
+    }
+    if (imported > 0) {
+      toast('✅ 从线上恢复了 ' + imported + ' 个题库');
+      renderHome();
+    } else {
+      // 也尝试从自动备份恢复
+      var info = DB.getBackupInfo();
+      if (info && info.banks > 0) {
+        var ok = await DB.restoreFromLocalStorage();
+        if (ok) {
+          toast('💾 已从自动备份恢复 ' + info.banks + ' 个题库');
+          renderHome();
+          return;
+        }
+      }
+      toast('没有找到线上题库文件，请手动导入 .md');
+    }
+  }
 
   // ---------- v40：学习报告（首页周报卡） ----------
   async function renderStudyReport() {
@@ -3213,5 +3263,15 @@
       return;
     }
     safe(renderHome(), '加载题库失败');
+    // v45：自动备份/恢复
+    safe((async () => {
+      var result = await DB.autoBackupCheck();
+      if (result.action === 'restored') {
+        toast('💾 已从自动备份恢复 ' + result.info.banks + ' 个题库（' + result.info.questions + ' 题）');
+        renderHome();
+      } else if (result.action === 'backed-up') {
+        console.log('[backup] 每日备份完成', result.info);
+      }
+    })(), '自动备份失败');
   });
 })();
