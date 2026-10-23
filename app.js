@@ -351,50 +351,122 @@
 
 
   // ---------- v45：从线上仓库恢复题库 ----------
+  // AI 安全包装（ai.js 未加载时不崩溃）
+  function _aiSafe(fn) { try { if (typeof AI !== 'undefined') fn(); } catch(e) {} }
+
+  // ---------- v46：从线上仓库恢复题库（旧版JS + .md + 备份三层） ----------
+  var _repoRestoring = false;
   async function restoreFromRepo() {
-    toast('正在从线上拉取题库…');
-    // 常见题库文件名列表（用户部署在 GitHub Pages 的 .md 文件）
-    // 后续可通过 banks.json 清单扩展
-    var candidates = [
-      '00247国际法历年真题.md', '国际法.md', '题库.md', '背书.md',
-      '机场服务话术背书.md', '国际法刷题.md', '国际法真题.md'
-    ];
-    var imported = 0;
-    for (var i = 0; i < candidates.length; i++) {
+    if (_repoRestoring) { toast('正在恢复中…'); return; }
+    _repoRestoring = true;
+    try {
+      var total = 0;
+      total += await restoreLegacyCards();
+      total += await restoreMdFiles();
+      if (total > 0) {
+        toast('✅ 恢复了 ' + total + ' 道题');
+        renderHome();
+      } else {
+        var info = DB.getBackupInfo();
+        if (info && info.banks > 0) {
+          var ok = await DB.restoreFromLocalStorage();
+          if (ok) { toast('💾 从备份恢复了 ' + info.banks + ' 个题库'); renderHome(); return; }
+        }
+        toast('没有找到可恢复的题库数据');
+      }
+    } catch (e) { reportErr('恢复失败', e); }
+    finally { _repoRestoring = false; }
+  }
+
+  async function restoreLegacyCards() {
+    var count = 0;
+    try {
+      var resp = await fetch('./review-cards.js');
+      if (resp.ok) {
+        var code = await resp.text();
+        var cards = extractCardsArray(code, 'LAW_REVIEW');
+        if (cards && cards.length) count += await importLegacyCards(cards, '国际法复习题（旧版）');
+      }
+    } catch (e) { console.warn('[restore] review-cards:', e.message); }
+    try {
+      var resp2 = await fetch('./law-cards.js');
+      if (resp2.ok) {
+        var code2 = await resp2.text();
+        var cards2 = extractCardsArray(code2, 'LAW_CARDS');
+        if (cards2 && cards2.length) count += await importLegacyCards(cards2, '国际法框架卡（旧版）');
+      }
+    } catch (e) { console.warn('[restore] law-cards:', e.message); }
+    return count;
+  }
+
+  function extractCardsArray(code, varName) {
+    try {
+      var m = code.match(new RegExp(varName + '\\s*=\\s*\\[([\\s\\S]*?)\\];'));
+      if (!m) return null;
+      var json = m[1].replace(/\\/g, '\\\\').replace(/'/g, '"').replace(/[\r\n]+\s*/g, ' ').replace(/,\s*([\]}])/g, '$1');
+      var arr = JSON.parse('[' + json + ']');
+      return Array.isArray(arr) ? arr : null;
+    } catch (e) { return null; }
+  }
+
+  async function importLegacyCards(cards, bankName) {
+    var existing = await DB.listBanks();
+    if (existing.some(function (b) { return b.name === bankName; })) return 0;
+    var byChapter = {};
+    cards.forEach(function (c) {
+      var ch = c.chapter || '未分组';
+      (byChapter[ch] = byChapter[ch] || []).push(c);
+    });
+    var questions = [];
+    var outline = [];
+    var cid = 0;
+    Object.keys(byChapter).forEach(function (ch) {
+      var nodeId = 'ch-' + (++cid);
+      outline.push({ id: nodeId, title: ch, level: 2, children: [] });
+      byChapter[ch].forEach(function (c, idx) {
+        questions.push({
+          id: 'lg-' + cid + '-' + idx, bankId: '', type: 'term',
+          chapterId: nodeId, chapterPath: [ch], chapter: ch,
+          term: (c.front || '').replace(/^(名词解释：|简答骨架：|简答：|对比：)/, ''),
+          definition: c.back || '', stem: c.front || '', answer: c.back || '',
+          order: questions.length, explanation: c.cue || ''
+        });
+      });
+    });
+    if (!questions.length) return 0;
+    var bank = await DB.saveBank(bankName, outline);
+    try {
+      questions.forEach(function (q) { q.bankId = bank.id; });
+      await DB.addQuestions(bank.id, questions);
+      return questions.length;
+    } catch (e) {
+      await DB.deleteBank(bank.id).catch(function () {});
+      throw e;
+    }
+  }
+
+  async function restoreMdFiles() {
+    var count = 0;
+    var names = ['00247_国际法真题_带答案.md', '202410_国际法真题_带答案.md', '202504_国际法真题_带答案.md', '机场服务话术背书.md'];
+    for (var i = 0; i < names.length; i++) {
       try {
-        var resp = await fetch('./' + encodeURIComponent(candidates[i]));
+        var resp = await fetch('./' + encodeURIComponent(names[i]));
         if (!resp.ok) continue;
         var text = await resp.text();
         if (!text || text.length < 20) continue;
         var parsed = QuizParser.parseDocument(text);
         if (!parsed || !parsed.questions.length) continue;
-        var bankName = parsed.name || candidates[i].replace(/\.md$/, '');
-        // 检查是否已导入
+        var bName = (parsed.name && parsed.name !== '未命名题库') ? parsed.name : names[i].replace(/\.md$/, '');
         var existing = await DB.listBanks();
-        var already = existing.some(function (b) { return b.name === bankName; });
-        if (already) continue;
-        var bank = await DB.saveBank(bankName, parsed.outline);
-        await DB.addQuestions(bank.id, parsed.questions);
-        imported++;
-      } catch (e) { /* 单个文件失败不影响其他 */ }
+        if (existing.some(function (b) { return b.name === bName; })) continue;
+        var bank = await DB.saveBank(bName, parsed.outline);
+        try { await DB.addQuestions(bank.id, parsed.questions); count += parsed.questions.length; }
+        catch (e) { await DB.deleteBank(bank.id).catch(function () {}); }
+      } catch (e) {}
     }
-    if (imported > 0) {
-      toast('✅ 从线上恢复了 ' + imported + ' 个题库');
-      renderHome();
-    } else {
-      // 也尝试从自动备份恢复
-      var info = DB.getBackupInfo();
-      if (info && info.banks > 0) {
-        var ok = await DB.restoreFromLocalStorage();
-        if (ok) {
-          toast('💾 已从自动备份恢复 ' + info.banks + ' 个题库');
-          renderHome();
-          return;
-        }
-      }
-      toast('没有找到线上题库文件，请手动导入 .md');
-    }
+    return count;
   }
+
 
   // ---------- v40：学习报告（首页周报卡） ----------
   async function renderStudyReport() {
@@ -1957,12 +2029,14 @@
     }
   }
   function openAiChat() {
+    if (typeof AI === 'undefined') { toast('AI 功能未启用'); return; }
     $('#aiChatModal').classList.remove('hidden');
     var log = $('#aiChatLog');
     if (!log.children.length) log.innerHTML = '<div class="ai-msg ai-msg-bot">你好！有什么法律概念不懂的随时问 👋</div>';
     $('#aiChatInput').focus();
   }
   function sendAiChat() {
+    if (typeof AI === 'undefined') return;
     var input = $('#aiChatInput');
     var msg = input.value.trim();
     if (!msg) return;
@@ -3082,10 +3156,13 @@
     });
     $('#goalModalClose').onclick = () => $('#goalModal').classList.add('hidden');
     $('#goalModal').onclick = (e) => { if (e.target === $('#goalModal')) $('#goalModal').classList.add('hidden'); };
-    // v41：AI 事件
+    // v41：AI 事件（ai.js 不可用时安全跳过）
+    var _aiOK = typeof AI !== 'undefined' && AI;
+    if (!_aiOK) console.warn('[AI] ai.js 未加载，跳过 AI 功能');
+    // （以下 AI 绑定仅当 _aiOK 时执行）
     document.addEventListener('click', function (e) {
       var btn = e.target.closest('.ai-btn');
-      if (btn) handleAiClick(btn.dataset.ai, btn.dataset.qid);
+      if (btn) if (typeof AI !== 'undefined') handleAiClick(btn.dataset.ai, btn.dataset.qid);
     });
     const aiF = $('#aiFloatBtn');
     if (aiF) {
@@ -3098,7 +3175,7 @@
     const aci = $('#aiChatInput'); if (aci) aci.onkeydown = (e) => { if (e.key === 'Enter') sendAiChat(); };
     const aiKI = $('#aiKeyInput');
     if (aiKI) {
-      aiKI.value = AI.getKey();
+      try { aiKI.value = AI.getKey(); } catch(e) { aiKI.value = ''; }
       const aiPI = $('#aiProxyInput');
       if (aiPI) {
         aiPI.value = AI.getProxy();
@@ -3114,9 +3191,9 @@
         else { st.textContent = '未配置'; st.style.color = ''; aiF && aiF.classList.add('hidden'); }
       };
       syncSt();
-      $('#aiSaveBtn').onclick = () => { AI.setKey(aiKI.value); syncSt(); toast(AI.hasKey() ? '已保存' : 'Key 为空'); };
+      $('#aiSaveBtn').onclick = () => { _aiSafe(function(){ AI.setKey(aiKI.value); }); syncSt(); toast(AI.hasKey() ? '已保存' : 'Key 为空'); };
       $('#aiTestBtn').onclick = () => {
-        AI.setKey(aiKI.value); syncSt();
+        _aiSafe(function(){ AI.setKey(aiKI.value); }); syncSt();
         if (!AI.hasKey()) { toast('请先填 Key'); return; }
         const b = $('#aiTestBtn'); b.textContent = '测试中…'; b.disabled = true;
         AI.testConnection().then(() => { b.textContent = '✅ 成功'; b.disabled = false; setTimeout(() => b.textContent = '测试连接', 2000); })
