@@ -134,7 +134,7 @@
   function answerText(q) {
     if (!q) return '';
     if (q.type === 'term') return q.definition || '（无定义）';
-    if (q.type === 'judge') return q.answer ? '对' : '错';
+    if (q.type === 'judge') return (q.answer === true || q.answer === 'true' || q.answer === '对' || q.answer === '1' || q.answer === 1) ? '对' : '错';
     // 填空 / 简答：答案本身就是文本
     if (q.type === 'fill' || q.type === 'essay') {
       const t = String(q.answer == null ? '' : q.answer).trim();

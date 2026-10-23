@@ -336,6 +336,7 @@
     return reqP(s.get(qid));
   }
   async function saveProgress(p) {
+    if (p) p.updatedAt = Date.now();   // v38 #8：合并时用 updatedAt 比较新旧
     // v33.1 F03（架构评审）：持久化日期护栏——历史代码可能写入 Infinity/NaN due
     // （不限量积压分期的除零产物），写入前统一收敛为「待复习」；只救新写入，不改历史存量
     if (p && (!isFinite(p.due) || p.due == null)) p.due = Date.now();
@@ -405,6 +406,7 @@
             p.inSrs = true;
             p.due = Date.now();
           }
+          p.updatedAt = Date.now();           // v38 #8
           s.put(p);
         };
       });
@@ -469,7 +471,7 @@
       if (!p || !p.qid) return;
       const w = wrongCount(p);
       if (w <= 0) return;
-      const grad = (p.wrongStreak || 0) >= WRONG_GRAD_N;
+      const grad = (p.wrongStreak || 0) >= wrongGradN();   // v38 #7：用可配置标准，不用固定常量
       if (wantDismissed) {
         if (!p.wrongDismissed) return;              // 「已移除」只收手动移除的
       } else {
@@ -498,6 +500,7 @@
     if (!p) return false;
     p.wrongStreak = 0;
     p.wrongDismissed = false;
+    p.updatedAt = Date.now();   // v39 补
     if (bankId) p.bankId = bankId;
     await reqP(s.put(p));
     return true;
@@ -509,6 +512,7 @@
     const p = await reqP(s.get(qid));
     if (!p) return false;
     p.wrongDismissed = !!dismissed;
+    p.updatedAt = Date.now();   // v39 补：跨设备合并可靠
     if (bankId) p.bankId = bankId;
     await reqP(s.put(p));
     return true;
@@ -533,18 +537,38 @@
     if (!dump || dump.app !== 'card-quiz' || !Array.isArray(dump.banks) || !Array.isArray(dump.questions)) {
       throw new Error('备份文件格式不对');
     }
+    // v38 #1（外部审查）：先完整校验数据结构，再开写事务——畸形备份绝不能清空原库
+    const KEYED = { banks: 'id', questions: 'id', progress: 'qid', sessions: 'id', goals: 'id' };
+    for (const [store, key] of Object.entries(KEYED)) {
+      const arr = dump[store] || [];
+      for (const rec of arr) {
+        if (!rec || typeof rec !== 'object') throw new Error(store + ' 中有非对象记录');
+        if (!rec[key]) throw new Error(store + ' 中有记录缺主键 ' + key);
+        // 结构化克隆预检（函数/Symbol 等会 throw）
+        try { structuredClone(rec); } catch (e) {
+          throw new Error(store + ' 中有记录无法序列化：' + (e.message || e));
+        }
+      }
+    }
     const db = await open();
     const t = db.transaction(['banks', 'questions', 'progress', 'sessions', 'goals', 'meta'], 'readwrite');
-    const bs = t.objectStore('banks'), qs = t.objectStore('questions'), ps = t.objectStore('progress'), ss = t.objectStore('sessions');
-    const gs = t.objectStore('goals'), ms = t.objectStore('meta');
-    bs.clear(); qs.clear(); ps.clear(); ss.clear(); gs.clear(); ms.clear();
-    dump.banks.forEach(b => bs.put(b));
-    dump.questions.forEach(q => qs.put(q));
-    (dump.progress || []).forEach(p => ps.put(p));
-    (dump.sessions || []).forEach(s => ss.put(s));
-    (dump.goals || []).forEach(g => gs.put(g));
-    (dump.meta || []).forEach(m => ms.put(m));
-    await txDone(t);
+    // 事务创建后立即注册完成/失败监听（txDone 已有 onabort）
+    const done = txDone(t);
+    try {
+      const bs = t.objectStore('banks'), qs = t.objectStore('questions'), ps = t.objectStore('progress'), ss = t.objectStore('sessions');
+      const gs = t.objectStore('goals'), ms = t.objectStore('meta');
+      bs.clear(); qs.clear(); ps.clear(); ss.clear(); gs.clear(); ms.clear();
+      dump.banks.forEach(b => bs.put(b));
+      dump.questions.forEach(q => qs.put(q));
+      (dump.progress || []).forEach(p => ps.put(p));
+      (dump.sessions || []).forEach(s => ss.put(s));
+      (dump.goals || []).forEach(g => gs.put(g));
+      (dump.meta || []).forEach(m => ms.put(m));
+    } catch (e) {
+      try { t.abort(); } catch (_) {}   // 写入区同步异常→显式 abort，clear 也回滚
+      throw e;
+    }
+    await done;
   }
 
   // ---------- v20：合并恢复（不清空，按 id 归并） ----------
@@ -567,7 +591,8 @@
     // 较新）的一方整体胜出，防止旧设备的高 reps 状态盖掉新设备的遗忘状态；
     // 字段白名单式拼接会丢 inSrs/wrongStreak，一并废止。计数字段仍逐项取 max：
     // 同源重复合并不虚增（幂等），历史累计不丢失。
-    const recency = (x) => Math.max(x.lastReviewed || 0, x.lastWrong || 0);
+    // v38 #8：优先比较 updatedAt（覆盖所有状态变更），旧数据回退到历史时间
+    const recency = (x) => x.updatedAt || Math.max(x.lastReviewed || 0, x.lastWrong || 0);
     const prim = (recency(b) > recency(a)) ? b : a;
     const out = Object.assign({}, prim);            // 完整快照：inSrs/wrongStreak/ease/interval/reps/due 全保留
     out.qid = a.qid;
@@ -610,6 +635,7 @@
     const qById = {}; localQuestions.forEach(q => { qById[q.id] = q; });
     const progById = {}; localProgress.forEach(p => { if (p && p.qid) progById[p.qid] = p; });
     const sessIds = {}; localSessions.forEach(s => { if (s && s.id) sessIds[s.id] = 1; });
+    const localSessMap = {}; localSessions.forEach(s => { if (s && s.id) localSessMap[s.id] = s; });   // v38 #8
 
     const questions = dump.questions.slice();
     questions.forEach(q => { qById[q.id] = q; });
@@ -646,6 +672,17 @@
     (dump.sessions || []).forEach(s => {
       if (!s || !s.id) return;
       if (!sessIds[s.id]) { sessions.push(s); stats.sessionsAdded++; }
+      // v38 #8：本机已有的流水，合并备份的 voided 撤销状态（旧备份不能复活已撤销的流水）
+      else if (s.voided && !localSessMap[s.id]) { /* 本机未撤销、备份已撤销——保守不写 */ }
+    });
+    // 本机流水中有备份标记为 voided 的，写回撤销标记
+    (dump.sessions || []).forEach(s => {
+      if (!s || !s.id || !s.voided) return;
+      const local = localSessMap[s.id];
+      if (local && !local.voided) {
+        local.voided = true; local.voidedAt = s.voidedAt || Date.now();
+        sessions.push(local);   // 更新后的本机记录写入
+      }
     });
 
     // v27：目标按 id 归并（updatedAt 新者胜）；meta 里考试信息取新者、模拟计数取 max
@@ -679,17 +716,30 @@
       meta: await reqP((await tx('meta', 'readonly')).getAll())
     };
     const plan = planMerge(dump, local);          // 格式不对在这里抛
+    // v39 P1-2：与 restoreAll 同样先校验再写——畸形记录不能部分写入
+    for (const rec of plan.questions) {
+      if (!rec || !rec.id) throw new Error('合并计划中有题目缺主键 id');
+    }
+    for (const rec of plan.progress) {
+      if (!rec || !rec.qid) throw new Error('合并计划中有进度缺主键 qid');
+    }
     const db = await open();
     const t = db.transaction(['banks', 'questions', 'progress', 'sessions', 'goals', 'meta'], 'readwrite');
-    const bs = t.objectStore('banks'), qs = t.objectStore('questions'), ps = t.objectStore('progress'), ss = t.objectStore('sessions');
-    const gs = t.objectStore('goals'), ms = t.objectStore('meta');
-    plan.banks.forEach(b => bs.put(b));
-    plan.questions.forEach(q => qs.put(q));
-    plan.progress.forEach(p => ps.put(p));
-    plan.sessions.forEach(s => ss.put(s));
-    plan.goals.forEach(g => gs.put(g));
-    (plan.meta || []).forEach(m => ms.put(m));
-    await txDone(t);
+    const done = txDone(t);
+    try {
+      const bs = t.objectStore('banks'), qs = t.objectStore('questions'), ps = t.objectStore('progress'), ss = t.objectStore('sessions');
+      const gs = t.objectStore('goals'), ms = t.objectStore('meta');
+      plan.banks.forEach(b => bs.put(b));
+      plan.questions.forEach(q => qs.put(q));
+      plan.progress.forEach(p => ps.put(p));
+      plan.sessions.forEach(s => ss.put(s));
+      plan.goals.forEach(g => gs.put(g));
+      (plan.meta || []).forEach(m => ms.put(m));
+    } catch (e) {
+      try { t.abort(); } catch (_) {}   // v39 P1-2：显式 abort 回滚
+      throw e;
+    }
+    await done;
     return plan.stats;
   }
 
@@ -717,7 +767,7 @@
     return new Promise((resolve, reject) => {
       const t = db.transaction(['progress', 'sessions'], 'readwrite');
       const pStore = t.objectStore('progress'), sStore = t.objectStore('sessions');
-      ps.forEach(p => pStore.put(p));
+      ps.forEach(p => { p.updatedAt = Date.now(); pStore.put(p); });   // v38 #8
       ss.forEach(x => sStore.put(Object.assign({ bankId: null, right: false, ms: 0, ts: Date.now() }, x)));
       t.oncomplete = () => resolve(ps.length + ss.length);
       t.onerror = () => reject(t.error);
@@ -884,7 +934,7 @@
 
     const totalQs = Object.keys(d.bankSizes || {}).reduce((a, k) => a + (d.bankSizes[k] || 0), 0);
     const seen = {};
-    (d.sessions || []).forEach(s => { if (s && s.qid) seen[s.qid] = 1; });
+    (d.sessions || []).forEach(s => { if (s && s.qid && !s.voided) seen[s.qid] = 1; });   // v39 补：排除撤销
     const practiced = Object.keys(seen).length;
 
     let wrongActive = 0;

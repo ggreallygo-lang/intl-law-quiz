@@ -225,6 +225,12 @@
         <input type="file" id="bgmFile" accept="audio/*" class="hidden">
         <div class="muted" style="font-size:12px;margin-top:4px">支持 mp3 / m4a / ogg / wav，存在本机不联网</div>
       </div>
+      <!-- v39：选项乱序开关（用户要求可切换：乱序/原序） -->
+      <div class="field"><label>选项乱序（内容在 ABCD 位置间打乱）</label>
+        <div class="seg" id="optShuffleSeg">
+          <button data-v="1">🔀 乱序</button><button data-v="0">📖 原序</button>
+        </div>
+      </div>
       <!-- v34.3：导出题库清洗规则（给外部 AI 的导入规范） -->
       <button class="btn secondary" id="exportRulesBtn">📤 导出清洗规则（AI 导入规范）</button>
       <button class="btn ghost" id="sfxModalClose">关闭</button>
@@ -318,6 +324,7 @@
       </div>
       <div class="muted" id="mixHint" style="font-size:13px;margin-top:8px"></div>
       <button class="btn" id="mixStart" style="width:100%;margin-top:10px">开始刷题 ›</button>
+      <button class="btn secondary" id="mixSave" style="width:100%;margin-top:8px">💾 保存为新题库（下次不用重选）</button>
       <button class="btn ghost" id="mixModalClose">关闭</button>
     </div>
   </div>
