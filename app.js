@@ -30,13 +30,26 @@
     return h > 0 ? h + ':' + pad2(m) + ':' + pad2(ss) : pad2(m) + ':' + pad2(ss);
   }
   // v21：模式计时器统一管理——离开学习页 / 结束 / 重开都要停，否则 interval 泄漏
-  function stopTimer(h) { if (h && h.timer) { clearInterval(h.timer); h.timer = null; } }
+  function stopTimer(h) {
+    if (h && h.timer) { clearInterval(h.timer); h.timer = null; }
+    // v42：暂停时累计活跃时间（排除后台/不动期间）
+    if (h && h._resumeAt) {
+      h._accumMs = (h._accumMs || 0) + (Date.now() - h._resumeAt);
+      h._resumeAt = null;
+    }
+  }
   function startTimerChip(holder) {
-    // holder: prac / mem；每秒刷新 #mtTimer（元素随题目重渲重建，按 id 找）
     if (!holder || holder.timer) return;
+    if (!holder.startAt) holder.startAt = Date.now();
+    if (!holder._accumMs) holder._accumMs = 0;
+    holder._resumeAt = Date.now();   // v42：记录本轮恢复时间
     holder.timer = setInterval(() => {
       const el = $('#mtTimer');
-      if (el && holder.startAt) el.textContent = '⏱ ' + fmtElapsed(Date.now() - holder.startAt);
+      if (el && holder.startAt) {
+        // v42：只计活跃时间（暂停期间不计入）
+        const ms = (holder._accumMs || 0) + (Date.now() - (holder._resumeAt || Date.now()));
+        el.textContent = '⏱ ' + fmtElapsed(ms);
+      }
     }, 1000);
   }
 
@@ -100,6 +113,27 @@
     curView = name;
     ['home', 'bank', 'study', 'wrong'].forEach(v => $('#view-' + v).classList.toggle('hidden', v !== name));
   }
+  // v42：计时暂停——切后台或 60 秒无操作时暂停，回来继续
+  let _lastActive = Date.now();
+  document.addEventListener('visibilitychange', function () {
+    if (document.hidden) {
+      stopTimer(prac); stopTimer(mem); stopTimer(exam);
+    } else {
+      _lastActive = Date.now();
+      if (curView === 'study') {
+        if (prac && prac.list && prac.i < prac.list.length) startTimerChip(prac);
+        if (mem && mem.list && mem.i < mem.list.length) startTimerChip(mem);
+      }
+    }
+  });
+  document.addEventListener('touchstart', function () { _lastActive = Date.now(); }, { passive: true });
+  document.addEventListener('click', function () { _lastActive = Date.now(); }, { passive: true });
+  setInterval(function () {
+    if (Date.now() - _lastActive > 60000 && !document.hidden) {
+      stopTimer(prac); stopTimer(mem); stopTimer(exam);
+    }
+  }, 5000);
+
   function cleanupStudy() {
     stopTimer(exam); stopTimer(prac); stopTimer(mem);   // v21：三个模式的计时器统一停
     if (mem && mem.keyHandler) { document.removeEventListener('keydown', mem.keyHandler); mem.keyHandler = null; }   // v32 A6
@@ -1249,24 +1283,26 @@
     // v28：卡片带章节路径面包屑（背书场景一眼知道在背哪个岗位的话术）
     const chapterLine = (q.chapterPath && q.chapterPath.length)
       ? `<div class="card-chapter">📖 ${esc(q.chapterPath.join(' › '))}</div>` : '';
-    // v28：答案面把题目再显示一遍——翻面后不用来回翻就能对着问题背答案
-    const stemMini = (q.type === 'term')
-      ? `<div class="card-stem-mini">${esc(q.term)}</div>`
-      : `<div class="card-stem-mini">${esc(q.stem)}</div>`;
+    // v42：去掉背面题目回显——正面刚看过，背面只放答案（不重复）
     let front = '', back = '';
     if (q.type === 'term') {
-      front = `<div class="tag">名词解释</div><div class="stem">${esc(q.term)}</div>`;
+      front = `${chapterLine}<div class="tag">名词解释</div><div class="stem">${esc(q.term)}</div>`;
       back = `<div class="def">${esc(q.definition) || '<span class="muted">（无定义）</span>'}</div>`;
     } else if (q.type === 'judge') {
-      front = `<div class="tag">判断题</div><div class="stem">${esc(q.stem)}</div>`;
+      front = `${chapterLine}<div class="tag">判断题</div><div class="stem">${esc(q.stem)}</div>`;
       back = ansBanner(q, null) + `<div class="def" style="font-size:15px">答案：${q.answer ? '✓ 对' : '✗ 错'}</div>`;
     } else {
-      front = `<div class="tag">${TYPE_LABEL[q.type]}</div><div class="stem">${esc(q.stem)}</div>` +
+      front = `${chapterLine}<div class="tag">${TYPE_LABEL[q.type]}</div><div class="stem">${esc(q.stem)}</div>` +
         (q.options || []).map(o => `<div class="opt">${esc(o.key)}. ${esc(o.text)}</div>`).join('');
       // 走 scoring：answer 是字符串 / undefined 时 .map 会直接崩掉整个背题页
-      back = (q.type === 'single' || q.type === 'multiple' || q.type === 'judge' || q.type === 'fill')
-        ? ansBanner(q, null) + `<div class="def" style="font-size:15px">${esc(Scoring.answerText(q))}</div>`
-        : `<div class="def">答案：${esc(Scoring.answerText(q))}</div>`;
+      // v42：客观题保留横幅+选项文字；主观题直接显示答案内容（不再套横幅）
+      if (q.type === 'single' || q.type === 'multiple' || q.type === 'judge') {
+        back = ansBanner(q, null) + `<div class="def" style="font-size:14px">${esc(Scoring.answerText(q))}</div>`;
+      } else if (q.type === 'fill') {
+        back = ansBanner(q, null) + `<div class="def" style="font-size:14px">${esc(Scoring.answerText(q))}</div>`;
+      } else {
+        back = `<div class="def">${esc(Scoring.answerText(q))}</div>`;
+      }
     }
     if (q.explanation) back += `<div class="exp">解析：${esc(q.explanation)}</div>`;
     // v14：真 3D 翻转结构 —— 正反面同时渲染、grid 叠放，翻面只是加 .flipped 转 180°
@@ -1278,8 +1314,8 @@
       `<div class="study-body slide-in">` +
       `<div class="flip3d" id="card">` +
         `<div class="flip3d-inner">` +
-          `<div class="flip-face flip-front">${chapterLine}${front}</div>` +
-          `<div class="flip-face flip-back">${chapterLine}<div class="tag">答案</div>${stemMini}${back}${aiButtons(q, 'memorize')}</div>` +
+          `<div class="flip-face flip-front">${front}</div>` +
+          `<div class="flip-face flip-back"><div class="tag">答案</div>${back}${aiButtons(q, 'memorize')}</div>` +
         `</div>` +
       `</div>` +
       `<div class="flip-hint" id="flipHint">点击卡片或下方按钮翻面看答案</div>` +
@@ -1439,6 +1475,35 @@
       else if (flipped && (k === 'z' || k === 'Z')) { e.preventDefault(); safe(doUndo(), '撤销失败'); }
     };
     document.addEventListener('keydown', mem.keyHandler);
+
+    // v42：滑动切题
+    const c3d = $('#card');
+    if (c3d) {
+      let tx = 0, ty = 0, sw = false;
+      c3d.addEventListener('touchstart', function (e) {
+        tx = e.touches[0].clientX; ty = e.touches[0].clientY; sw = true;
+      }, { passive: true });
+      c3d.addEventListener('touchend', function (e) {
+        if (!sw) return; sw = false;
+        const dx = e.changedTouches[0].clientX - tx;
+        const dy = e.changedTouches[0].clientY - ty;
+        if (Math.abs(dx) < 60 || Math.abs(dx) < Math.abs(dy)) return;
+        if (mem.locked) return;
+        mem.locked = true;
+        SFX.flip();
+        const el = $('#card');
+        if (el) el.classList.add(dx < 0 ? 'swipe-next' : 'swipe-prev');
+        setTimeout(function () {
+          if (dx < 0) {
+            if (!flipped && !reviewing) mem.skippedN = (mem.skippedN || 0) + 1;
+            mem.i++;
+          } else if (dx > 0 && mem.i > 0) {
+            mem.review = true; mem.i--;
+          }
+          renderMemorize();
+        }, 200);
+      }, { passive: true });
+    }
   }
 
   // ---------- 刷题模式 ----------
@@ -1486,12 +1551,21 @@
 
     // 自评题：名词解释 / 简答 / 答案过长的填空 —— 看答案后自己判断会/不会
     if (Scoring.isSelfAssess(q)) {
-      const label = q.type === 'fill' ? '填空题（答案较长，自评）' : TYPE_LABEL[q.type];
+      const label = q.type === 'fill' ? '填空题（答案较长）' : TYPE_LABEL[q.type];
       const front = (q.type === 'term') ? q.term : q.stem;
+      const hasAi = aiAvailable();
       body = `<div class="tag" style="display:inline-block;font-size:12px;padding:3px 10px;border-radius:999px;background:var(--primary);color:#fff;margin-bottom:12px">${esc(label)}</div>
-        <div class="q-stem">${esc(front)}</div>
-        <button class="btn" id="revealTerm">显示答案</button>
-        <div id="termBack" class="hidden" style="margin-top:14px">
+        <div class="q-stem">${esc(front)}</div>` +
+        (hasAi ?
+          `<textarea id="aiAnswerInput" class="ai-answer-input" placeholder="输入你的答案（或点🎤语音输入），AI 帮你判分" rows="4"></textarea>
+           <div class="btn-row" style="margin-top:10px">
+             <button class="btn" id="aiGradeBtn">🤖 AI 判题</button>
+             <button class="btn secondary" id="voiceBtn">🎤 语音</button>
+             <button class="btn ghost" id="revealTerm">看答案自评</button>
+           </div>
+           <div id="aiGradeResult" class="hidden" style="margin-top:12px"></div>` :
+          `<button class="btn" id="revealTerm">显示答案</button>`) +
+        `<div id="termBack" class="hidden" style="margin-top:14px">
           <div class="feedback ok" style="white-space:pre-wrap">${esc(Scoring.answerText(q))}</div>
           <div class="btn-row" style="margin-top:14px">
             <button class="btn rate-know" id="tRight">答对了</button>
@@ -1543,11 +1617,84 @@
 
     // 自评题（名词解释 / 简答 / 长答案填空）
     if (Scoring.isSelfAssess(q)) {
-      $('#revealTerm').onclick = () => {
-        $('#termBack').classList.remove('hidden'); $('#revealTerm').classList.add('hidden');
-        $('#tRight').onclick = () => finishPractice(q, true, '自评');
-        $('#tWrong').onclick = () => finishPractice(q, false, '自评');
-      };
+      // v43：AI 判题
+      const gradeBtn = $('#aiGradeBtn');
+      if (gradeBtn) {
+        gradeBtn.onclick = () => {
+          const inp = $('#aiAnswerInput');
+          const answer = (inp ? inp.value : '').trim();
+          if (!answer) { toast('先输入你的答案'); return; }
+          const result = $('#aiGradeResult');
+          result.classList.remove('hidden');
+          result.innerHTML = '<div style="text-align:center;padding:16px;color:var(--muted)">🤖 AI 阅卷中…</div>';
+          AI.grade(q, answer).then(function (text) {
+            const first = text.split(String.fromCharCode(10))[0].trim();
+            const isRight = first === '对';
+            const isHalf = first === '半对';
+            result.innerHTML = '<div class="feedback ' + (isRight ? 'ok' : isHalf ? '' : 'bad') + '" style="white-space:pre-wrap">' +
+              esc(text) + '</div>' +
+              '<div class="btn-row" style="margin-top:12px">' +
+              '<button class="btn ' + (isRight ? 'rate-know' : 'rate-forget') + '" id="aiConfirm">' +
+              (isRight ? '✓ 算对' : isHalf ? '◐ 算半对' : '✗ 算错') + '</button>' +
+              '<button class="btn ghost" id="aiOverride">' + (isRight ? '改判错' : '改判对') + '</button></div>';
+            $('#aiConfirm').onclick = () => finishPractice(q, isRight, answer);
+            $('#aiOverride').onclick = () => finishPractice(q, !isRight, answer);
+            // 显示标准答案供对比
+            $('#termBack').classList.remove('hidden');
+            $('#revealTerm') && $('#revealTerm').classList.add('hidden');
+          }).catch(function (e) {
+            result.innerHTML = '<div class="feedback bad">❌ ' + esc(e.message) + '</div>' +
+              '<button class="btn secondary" style="margin-top:8px" id="fallbackSelf">改为自评</button>';
+            $('#fallbackSelf').onclick = () => {
+              result.classList.add('hidden');
+              $('#termBack').classList.remove('hidden');
+              $('#revealTerm') && $('#revealTerm').classList.add('hidden');
+            };
+            $('#termBack').classList.remove('hidden');
+            $('#revealTerm') && $('#revealTerm').classList.add('hidden');
+          });
+        };
+      }
+      // v43：语音输入（Web Speech API）
+      const voiceBtn = $('#voiceBtn');
+      if (voiceBtn) {
+        voiceBtn.onclick = function () {
+          const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+          if (!SR) { toast('此浏览器不支持语音，请直接打字'); return; }
+          const rec = new SR();
+          rec.lang = 'zh-CN';
+          rec.interimResults = true;
+          rec.continuous = false;
+          const inp = $('#aiAnswerInput');
+          voiceBtn.textContent = '🔴 说话中…';
+          voiceBtn.style.background = 'var(--bad)';
+          rec.onresult = function (e) {
+            let text = '';
+            for (let i = 0; i < e.results.length; i++) text += e.results[i][0].transcript;
+            if (inp) inp.value = text;
+          };
+          rec.onend = function () {
+            voiceBtn.textContent = '🎤 语音';
+            voiceBtn.style.background = '';
+            if (inp && inp.value.trim()) toast('已识别，点「AI 判题」提交');
+          };
+          rec.onerror = function () {
+            voiceBtn.textContent = '🎤 语音';
+            voiceBtn.style.background = '';
+            toast('语音识别失败，请重试');
+          };
+          rec.start();
+        };
+      }
+      // 自评兜底（没 AI 或 AI 失败时）
+      const revealBtn = $('#revealTerm');
+      if (revealBtn) {
+        revealBtn.onclick = () => {
+          $('#termBack').classList.remove('hidden'); revealBtn.classList.add('hidden');
+          $('#tRight').onclick = () => finishPractice(q, true, (document.querySelector('#aiAnswerInput') || {}).value || '自评');
+          $('#tWrong').onclick = () => finishPractice(q, false, (document.querySelector('#aiAnswerInput') || {}).value || '自评');
+        };
+      }
       return;
     }
     // v39 P2-1：填空题回看——已答题只能看不能再做
@@ -1607,7 +1754,7 @@
         if (!picked.size) { toast('至少选一个选项'); return; }
         const keys = Array.from(picked);
         opts.forEach(o => o.classList.add('locked'));
-        confirmBtn.disabled = true;
+        confirmBtn.remove();   // v41.1 修：确认后直接移除按钮（disabled 仍占位挡住下一题）
         const right = Scoring.isRight(q, keys);
         const correctKeys = Scoring.answerKeys(q);
         opts.forEach(o => {
@@ -1744,16 +1891,19 @@
     if (!q) return;
     var el = $('#aiResult');
     if (el) { el.classList.remove('hidden'); el.innerHTML = '<div style="text-align:center;padding:16px;color:var(--muted)">🤔 AI 思考中…</div>'; }
-    if (type === 'explain') {
-      AI.explain(q).then(function (t) { showAiResult('🧠 AI 解析', t); })
-        .catch(function (e) { showAiResult('❌', e.message); });
-    } else if (type === 'mnemonic') {
-      AI.mnemonic(q).then(function (t) { showAiResult('💡 巧计', t); })
-        .catch(function (e) { showAiResult('❌', e.message); });
-    } else if (type === 'related') {
+    var handler = function (promise, title) {
+      promise.then(function (t) { showAiResult(title, t); })
+        .catch(function (e) {
+          console.error('[AI]', type, e);
+          showAiResult('❌ 出错了', (e.message || '请求失败') + ' — 请检查网络和 API Key，稍后重试');
+        });
+    };
+    if (type === 'explain') handler(AI.explain(q), '🧠 AI 解析');
+    else if (type === 'mnemonic') handler(AI.mnemonic(q), '💡 巧计');
+    else if (type === 'related') {
       AI.searchRelated(q, S.questions).then(function (r) {
-        showAiResult('🔗 关联题（' + r.keywords.join('、') + '）', r.items.length ? '找到 ' + r.items.length + ' 道：' : '没有找到紧密关联的题。', r.items);
-      }).catch(function (e) { showAiResult('❌', e.message); });
+        showAiResult('🔗 关联（' + r.keywords.join('、') + '）', r.items.length ? '找到' + r.items.length + '道：' : '无紧密关联题', r.items);
+      }).catch(function (e) { showAiResult('❌ 出错了', String(e.message || e)); });
     }
   }
   function openAiChat() {
@@ -2899,6 +3049,15 @@
     const aiKI = $('#aiKeyInput');
     if (aiKI) {
       aiKI.value = AI.getKey();
+      const aiPI = $('#aiProxyInput');
+      if (aiPI) {
+        aiPI.value = AI.getProxy();
+        aiPI.addEventListener('change', function() {
+          AI.setProxy(aiPI.value);
+          localStorage.removeItem('ai-mode');   // 清除记忆，重新探测
+          toast(aiPI.value ? '代理已保存' : '已清除代理（自动模式）');
+        });
+      }
       const syncSt = () => {
         const st = $('#aiStatus');
         if (AI.hasKey()) { st.textContent = '✅ 已配置（' + AI.getModel() + '）'; st.style.color = 'green'; aiF && aiF.classList.remove('hidden'); }

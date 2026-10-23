@@ -38,6 +38,46 @@
   }
   function hasKey() { return !!getKey(); }
 
+  // ---- v41.3 代理管理（CORS 跨域解决） ----
+  var PUBLIC_PROXY = 'https://corsproxy.io/?url=';
+  function getProxy() {
+    try { return localStorage.getItem('ai-proxy') || ''; } catch (e) { return ''; }
+  }
+  function setProxy(u) {
+    try { localStorage.setItem('ai-proxy', String(u || '').trim()); } catch (e) {}
+  }
+  // 记住上次成功的方式（'direct' | 'proxy'），避免每次都试错
+  function getLastMode() {
+    try { return localStorage.getItem('ai-mode') || ''; } catch (e) { return ''; }
+  }
+  function setLastMode(m) {
+    try { localStorage.setItem('ai-mode', m); } catch (e) {}
+  }
+  function buildUrl(mode) {
+    if (mode === 'custom') return getProxy();
+    if (mode === 'proxy') return PUBLIC_PROXY + encodeURIComponent(API_URL);
+    return API_URL;   // direct
+  }
+  function doFetch(url, body, authHeader) {
+    return fetch(url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Authorization': authHeader },
+      body: JSON.stringify(body)
+    });
+  }
+  function parseResp(res) {
+    if (!res.ok) {
+      return res.json().catch(function () { return {}; }).then(function (err) {
+        throw new Error((err.error && err.error.message) || ('API(' + res.status + ')'));
+      });
+    }
+    return res.json().then(function (data) {
+      var c = data.choices && data.choices[0] && data.choices[0].message && data.choices[0].message.content;
+      if (!c) throw new Error('AI 返回为空');
+      return c;
+    });
+  }
+
   // ---- 缓存 ----
   function cacheGet(id) {
     try { return localStorage.getItem(CACHE_PREFIX + id) || null; } catch (e) { return null; }
@@ -63,32 +103,49 @@
   // ---- 核心请求 ----
   function chat(messages, opts) {
     var key = getKey();
-    if (!key) return Promise.reject(new Error('请先在 🔊 设置中填入 API Key'));
+    if (!key) return Promise.reject(new Error('请先填入 API Key'));
     var model = getModel();
-    return fetch(API_URL, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'Authorization': 'Bearer ' + key
-      },
-      body: JSON.stringify({
-        model: model,
-        messages: messages,
-        temperature: (opts && opts.temperature) != null ? opts.temperature : 0.7,
-        max_tokens: (opts && opts.max_tokens) || 1024
-      })
-    }).then(function (res) {
-      if (!res.ok) {
-        return res.json().catch(function () { return {}; }).then(function (err) {
-          throw new Error((err.error && err.error.message) || ('API 请求失败(' + res.status + ')'));
-        });
+    var body = {
+      model: model,
+      messages: messages,
+      temperature: (opts && opts.temperature) != null ? opts.temperature : 0.7,
+      max_tokens: (opts && opts.max_tokens) || 1024
+    };
+    var auth = 'Bearer ' + key;
+    var customProxy = getProxy();
+
+    // v41.3：自动探测最佳连接方式
+    // 优先级：上次成功的方式 → 自定义代理 → 直连 → 公共代理
+    var lastMode = getLastMode();
+    var tryOrder = [];
+    if (lastMode === 'custom' && customProxy) tryOrder.push('custom');
+    else if (lastMode === 'proxy') tryOrder.push('proxy');
+    else if (lastMode === 'direct') tryOrder.push('direct');
+    if (customProxy && tryOrder.indexOf('custom') < 0) tryOrder.push('custom');
+    if (tryOrder.indexOf('direct') < 0) tryOrder.push('direct');
+    if (tryOrder.indexOf('proxy') < 0) tryOrder.push('proxy');
+
+    var idx = 0;
+    function attempt() {
+      if (idx >= tryOrder.length) {
+        return Promise.reject(new Error('所有连接方式均失败——请检查网络，或在设置中配置 Cloudflare Worker 代理地址'));
       }
-      return res.json();
-    }).then(function (data) {
-      var content = data.choices && data.choices[0] && data.choices[0].message && data.choices[0].message.content;
-      if (!content) throw new Error('AI 返回为空');
-      return content;
-    });
+      var mode = tryOrder[idx++];
+      var url = buildUrl(mode);
+      return doFetch(url, body, auth).then(function (res) {
+        return parseResp(res);
+      }).then(function (text) {
+        setLastMode(mode);   // 记住成功方式，下次直接用
+        return text;
+      }).catch(function (e) {
+        // 401/403 = Key 错误，不需要换方式重试
+        if (e.message && (e.message.indexOf('API(401') >= 0 || e.message.indexOf('API(403') >= 0)) {
+          throw e;
+        }
+        return attempt();   // 网络错误 → 试下一种方式
+      });
+    }
+    return attempt();
   }
 
   // 带缓存的请求
@@ -108,11 +165,12 @@
 
   // ---- 系统提示词 ----
   var SYSTEM_EXPLAIN = '你是一位国际法考研辅导老师，擅长用通俗易懂的方式解析法律题目。' +
-    '用户会给你一道答错的题，请按以下格式回答：\n' +
+    '用户会给你一道题，请按以下格式回答：\n' +
     '1. 为什么正确答案对（引用法条/公约/教材要点，简洁）\n' +
-    '2. 为什么用户的答案错（指出混淆点）\n' +
-    '3. 易混淆概念对比（如果有，用简短表格或列表）\n' +
-    '全文控制在 300 字以内，重点突出，适合手机阅读。';
+    '2. 为什么用户的答案错（指出混淆点；没给答案则跳过）\n' +
+    '3. 易混淆概念对比（如果有，用简短对比）\n' +
+    '4. ★ 易错提醒：这道题最容易踩的1-2个坑\n' +
+    '全文控制在350字以内，重点突出，适合手机阅读。';
 
   var SYSTEM_MNEMONIC = '你是一位擅长编记忆口诀的辅导老师。给定一道题和答案，请生成 1-2 条巧计：\n' +
     '- 谐音口诀（如"领海十二"谐音"领食一二"）\n' +
@@ -132,7 +190,7 @@
     var stem = q.stem || q.term || '';
     var options = (q.options || []).map(function (o) { return o.key + '. ' + o.text; }).join('\n');
     var correct = Array.isArray(q.answer) ? q.answer.join('') : String(q.answer || '');
-    var cacheId = 'exp-' + q.id;
+    var cacheId = 'exp3-' + q.id;
     var msgs = [
       { role: 'system', content: SYSTEM_EXPLAIN },
       { role: 'user', content: '题目：' + stem + '\n' + (options ? '选项：\n' + options + '\n' : '') +
@@ -201,15 +259,34 @@
     return chat(msgs, { temperature: 0.5, max_tokens: 600 });
   }
 
+  // ---- v43 功能 5：AI 判题（填空/大题自动评分） ----
+  var SYSTEM_GRADE = '你是一位国际法考研阅卷老师。给定题目、标准答案和考生答案，请评分：' +
+    '如果考生答案的核心要点覆盖了标准答案（表述可不同），判为"对"；' +
+    '如果部分正确，判为"半对"并指出缺了什么；完全偏离则判为"错"。' +
+    '格式：第一行只写"对"/"半对"/"错"（一字不差），第二行起用 2-3 句简要说明。' +
+    '100 字以内。';
+
+  function grade(q, userAnswer) {
+    var stem = q.stem || q.term || '';
+    var correct = q.definition || (Array.isArray(q.answer) ? q.answer.join('') : String(q.answer || ''));
+    var cacheId = 'gr-' + q.id;
+    var msgs = [
+      { role: 'system', content: SYSTEM_GRADE },
+      { role: 'user', content: '题干：' + stem + '\n标准答案：' + correct + '\n考生答案：' + userAnswer }
+    ];
+    return chatCached(cacheId, msgs, { temperature: 0.3, max_tokens: 300 });
+  }
+
   return {
     getKey: getKey, setKey: setKey,
     getModel: getModel, setModel: setModel,
+    getProxy: getProxy, setProxy: setProxy,
     hasKey: hasKey,
     testConnection: testConnection,
     explain: explain,
     mnemonic: mnemonic,
     relatedKeywords: relatedKeywords,
     searchRelated: searchRelated,
-    tutor: tutor
+    tutor: tutor, grade: grade
   };
 });

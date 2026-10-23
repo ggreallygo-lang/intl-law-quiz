@@ -298,7 +298,7 @@ body {
 /* 学习卡片（背题） */
 .card-flip {
   background: var(--surface); border-radius: var(--radius); box-shadow: var(--shadow);
-  min-height: 38vh; padding: 22px;   /* v29：42→38，短题卡不再大片空白 */ display: flex; flex-direction: column;
+  min-height: 52vh; padding: 18px 20px;   /* v42→38，短题卡不再大片空白 */ display: flex; flex-direction: column;
   border: 1px solid var(--line);
 }
 
@@ -319,7 +319,7 @@ body {
   -webkit-backface-visibility: hidden;
   background: var(--surface); border: 1px solid var(--line);
   border-radius: var(--radius); box-shadow: var(--shadow);
-  min-height: 38vh; padding: 22px;   /* v29：42→38，短题卡不再大片空白 */
+  min-height: 52vh; padding: 18px 20px;   /* v42→38，短题卡不再大片空白 */
   display: flex; flex-direction: column;
 }
 .flip-back { transform: rotateY(180deg); }
@@ -1073,14 +1073,8 @@ body {
 [data-theme="dark"] #nextWrap { background: var(--bg, #1a1815); }
 
 /* 多选确认按钮也吸底 */
-#multiConfirm {
-  position: sticky;
-  bottom: 0;
-  z-index: 10;
-  background: var(--primary);
-  border-radius: 10px;
-  box-shadow: 0 -2px 12px rgba(0,0,0,.12);
-}
+/* v41.1: confirm btn not sticky (avoid overlap with next btn) */
+#multiConfirm { position: static; z-index: auto; }
 
 /* ===== v40：冲刺卡 + 学习报告 ===== */
 .sprint-card {
@@ -1143,3 +1137,49 @@ body {
 .ai-msg-bot { background: var(--surface); border: 1px solid var(--line); }
 .ai-msg-user { background: var(--primary); color: #fff; margin-left: auto; }
 .ai-msg-err { color: #f44336; }
+
+
+/* ===== v42：背题卡全屏 + 滑动切题 + 计时暂停 ===== */
+.flip-face .stem { font-size: 21px; font-weight: 650; line-height: 1.6; flex: 1; display: flex; align-items: center; }
+.flip-face .def { font-size: 18px; line-height: 1.75; flex: 1; overflow-y: auto; }
+.card-chapter { font-size: 10px; color: var(--muted); margin-bottom: 6px; }
+.card-stem-mini { display: none !important; }
+#flipBtn { font-size: 16px; padding: 14px; border-radius: 14px; }
+.rate-row { gap: 8px; }
+.rate-row .btn { font-size: 15px; padding: 14px 10px; }
+.eq-row { gap: 6px; }
+.eq-row > button { font-size: 13px; padding: 10px 14px; }
+.ai-btn-row { margin-top: 6px; }
+.ai-btn { padding: 4px 12px; font-size: 12px; }
+.progress-top { margin-bottom: 8px; }
+.progress-bar { height: 3px; }
+.flip-hint { display: none; }
+/* 滑动动画 */
+.flip3d.swipe-next { animation: swipeL .22s ease forwards; }
+.flip3d.swipe-prev { animation: swipeR .22s ease forwards; }
+@keyframes swipeL { to { transform: translateX(-80vw); opacity: 0; } }
+@keyframes swipeR { to { transform: translateX(80vw); opacity: 0; } }
+.swipe-tip {
+  position: fixed; bottom: 140px; left: 50%; transform: translateX(-50%);
+  padding: 6px 18px; border-radius: 20px; background: rgba(0,0,0,.75); color: #fff;
+  font-size: 14px; z-index: 60; pointer-events: none; opacity: 0; transition: opacity .12s;
+}
+.swipe-tip.show { opacity: 1; }
+/* 错题本入口加强 */
+.wb-entry {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 14px 16px; border: 2px solid var(--bad, #e57373); border-radius: 14px;
+  background: var(--surface); margin-top: 14px; cursor: pointer;
+  font-size: 15px; font-weight: 650; color: var(--bad, #d32f2f);
+}
+.wb-entry:active { transform: scale(.98); }
+
+/* ===== v43：AI 判题 + 语音输入 ===== */
+.ai-answer-input {
+  width: 100%; min-height: 90px; padding: 12px;
+  border: 2px solid var(--primary); border-radius: 12px;
+  background: var(--surface); color: var(--text);
+  font-size: 16px; line-height: 1.6; resize: vertical;
+  margin-top: 10px; font-family: inherit;
+}
+.ai-answer-input:focus { outline: none; border-color: var(--primary); box-shadow: 0 0 0 3px rgba(33,150,243,.15); }
