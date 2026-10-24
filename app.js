@@ -1974,11 +1974,52 @@
     if (rec && rec !== 'skip') {
       const label = TYPE_LABEL[q.type];
       const front = (q.type === 'term') ? q.term : q.stem;
+      const isChoice = (q.type === 'single' || q.type === 'multiple' || q.type === 'judge');
+      const keys = isChoice ? Scoring.answerKeys(q) : [];
+      const pickedList = isChoice
+        ? [].concat(rec.picked == null ? [] : rec.picked).map(x => String(x).trim().toUpperCase()).filter(Boolean)
+        : [];
+      const judgeWant = q.type === 'judge' ? (Scoring.normKeys(q.answer) === '1' ? '1' : '0') : '';
+      // v52：回看要把整道题还原出来——以前只甩一行答案文本，正确答案还用红色显示，看着像「A 是错的」
+      let optsHtml = '';
+      if (q.type === 'judge') {
+        optsHtml = [['1', '对'], ['0', '错']].map(pair => {
+          let cls = 'option locked';
+          if (pair[0] === judgeWant) cls += ' correct';
+          if (pickedList.indexOf(pair[0]) >= 0 && pair[0] !== judgeWant) cls += ' wrong';
+          return '<div class="' + cls + '"><span class="key">' + (pair[0] === '1' ? '✓' : '✗') + '</span> ' + pair[1] + '</div>';
+        }).join('');
+      } else if (isChoice && Array.isArray(q.options) && q.options.length) {
+        optsHtml = q.options.map(o => {
+          const k = String(o.key).trim().toUpperCase();
+          let cls = 'option locked';
+          if (keys.indexOf(k) >= 0) cls += ' correct';
+          if (pickedList.indexOf(k) >= 0 && keys.indexOf(k) < 0) cls += ' wrong';
+          return '<div class="' + cls + '"><span class="key">' + esc(o.key) + '</span> ' + esc(o.text) + '</div>';
+        }).join('');
+      }
+      // 把你选的字母还原成内容，光看「C」没人知道 C 是什么
+      let pickedText = '';
+      if (isChoice) {
+        pickedText = pickedList.length
+          ? pickedList.map(k => {
+              if (q.type === 'judge') return k === '1' ? '对' : '错';
+              const hit = (q.options || []).find(x => String(x.key).trim().toUpperCase() === k);
+              return hit ? k + '. ' + hit.text : k;
+            }).join('；')
+          : '未作答';
+      } else if (rec.picked != null && String(rec.picked).trim()) {
+        pickedText = String(rec.picked).trim();
+      }
+      const answerLine = isChoice
+        ? (q.type === 'judge' ? (judgeWant === '1' ? '对' : '错') : keys.join('、'))
+        : Scoring.answerText(q);
       view.innerHTML =
         `<div class="tag" style="display:inline-block;font-size:12px;padding:3px 10px;border-radius:999px;background:var(--primary);color:#fff;margin-bottom:12px">${esc(label)}</div>
-        <div class="q-stem">${esc(front)}</div>
-        <div class="feedback ${rec.right ? 'ok' : 'bad'}" style="margin-top:14px;white-space:pre-wrap">${esc(Scoring.answerText(q))}</div>
-        <div class="muted" style="margin-top:8px;font-size:13px">${rec.right ? '✓ 当时答对' : '✗ 当时没答对'}（回看）· 你的回答：${esc([].concat(rec.picked || '').join('、'))}</div>` +
+        <div class="q-stem">${esc(front)}</div>` +
+        optsHtml +
+        `<div class="review-note ${rec.right ? 'ok' : 'bad'}">${rec.right ? '✓ 当时答对' : '✗ 当时答错'}${pickedText ? '<span class="review-picked">你的作答：' + esc(pickedText) + '</span>' : ''}</div>` +
+        (!isChoice ? `<div class="review-answer"><b>参考答案</b>${esc(answerLine)}</div>` : '') +
         (q.explanation ? `<div class="feedback" style="white-space:pre-wrap">解析：${esc(q.explanation)}</div>` : '') +
         '<div id="wrongStreakProgress" class="muted"></div>' + relatedHtml(q) + aiHelpHtml(q) +
         `<div class="btn-row" style="margin-top:14px">` +

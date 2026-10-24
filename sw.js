@@ -8,7 +8,7 @@
  *   3. 离线回退 HTML 只用于导航请求；JS/CSS 等子资源离线时绝不能回退成 index.html
  *      （否则控制台一片 MIME 错误、页面假死）。
  */
-const CACHE = 'card-quiz-v51';   // 解析改结构化短卡片 + 举一反三关联题
+const CACHE = 'card-quiz-v52';   // 回看态完整还原选项 + 巧记提示词重写
                                  // 注意：本 SW 对同源资源是 cache-first，改了 styles.css/app.js
                                  // 必须同步改这里，否则老用户永远拿到旧样式。
 const PREFIX = 'card-quiz-';

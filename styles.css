@@ -1112,6 +1112,25 @@ body {
   border-radius: 10px; white-space: pre-wrap; overflow-wrap: anywhere; font-size: 14px;
 }
 
+/* ===== v52：回看态（只读回顾） ===== */
+.review-note {
+  margin-top: 14px; padding: 9px 12px; border-radius: 10px;
+  font-size: 13.5px; line-height: 1.5;
+  display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 10px;
+}
+.review-note.ok { background: var(--ok-bg); color: var(--ok); }
+.review-note.bad { background: var(--bad-bg); color: var(--bad); }
+.review-picked { font-weight: 400; color: var(--text); opacity: .9; }
+.review-answer {
+  margin-top: 10px; padding: 11px 12px; border-radius: 10px;
+  border: 1px solid var(--line); background: var(--surface);
+  font-size: 14px; line-height: 1.6; white-space: pre-wrap;
+}
+.review-answer b { display: block; margin-bottom: 4px; font-size: 12px; font-weight: 700; color: var(--muted); }
+
+/* 回看态的选项不可点，去掉按压反馈 */
+.option.locked:active { transform: none; }
+
 /* ===== v51：AI 辅助内容改成结构化短卡片（原来是一整段 pre-wrap 纯文本） ===== */
 .ai-result { margin-top: 10px; }
 .ai-note { margin-top: 6px; font-size: 12px; }
@@ -1150,8 +1169,8 @@ body {
 .ai-full-text { font-size: 13px; line-height: 1.62; color: var(--text); white-space: pre-wrap; overflow-wrap: anywhere; }
 
 /* 巧记：口诀放大，说明压成一行小字 */
-.ai-hook { font-size: 17px; font-weight: 700; letter-spacing: .5px; line-height: 1.4; color: var(--primary); }
-.ai-map { margin-top: 6px; font-size: 12.5px; line-height: 1.5; color: var(--muted); }
+.ai-hook { font-size: 16.5px; font-weight: 700; letter-spacing: .3px; line-height: 1.5; color: var(--primary); overflow-wrap: anywhere; }
+.ai-map { margin-top: 6px; font-size: 12.5px; line-height: 1.55; color: var(--muted); }
 
 /* ===== v51：举一反三 · 同考点关联题 ===== */
 .rel-block {

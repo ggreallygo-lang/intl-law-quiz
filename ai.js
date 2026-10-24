@@ -274,21 +274,32 @@
     return { oneline: oneline, points: data.points.map(function (p) { return p.trim(); }), trap: (data.trap || '').trim() };
   }
 
-  // 题型 2：一句口诀 + 一句对应说明（≤60 字）
+  // 题型 2：一句真能记住的口诀 + 逐字拆回答案
   async function mnemonic(question, options) {
     const dataText = buildPayload(question, null);
     const result = await request([
       { role: 'system', content: SYSTEM_BASE +
-        '为参考答案编一句好记的口诀。只输出 JSON 对象，恰好两个字段：' +
-        'hook 口诀本体，不超过 20 字，可用谐音、缩写、押韵；' +
-        'map 一句话说明口诀怎么对上答案，不超过 40 字。' +
-        '不能为押韵省略关键条件、反转结论或添加不存在的规则；实在不适合编口诀时，hook 写最短的记忆抓手，map 写为什么好记。' },
+        '你的任务是编记忆口诀，不是复述答案。' +
+        '只输出 JSON 对象，恰好两个字段：' +
+        'hook 口诀本体，不超过 24 字；map 把口诀逐字拆回答案，不超过 50 字。' +
+        'hook 必须真的用上一种手法：①首字提取——几个要点各取一个字串成顺口的话；' +
+        '②谐音——把专名换成读音相近的日常词；③押韵或对仗——字数对齐、尾字同韵；' +
+        '④画面——把抽象规则写成一个荒诞但具体的场景。' +
+        'map 要能一一对上，说清每个字/词对应答案的哪一部分。' +
+        '硬要求：' +
+        '一、hook 不能是答案的缩写、同义改写或口号。判断标准是——如果只看 hook 也能靠字面联想起答案，才算成功；' +
+        '如果 hook 换成「记住这个考点」意思也通，就是失败，必须重编。' +
+        '二、不能为了顺口改变结论、漏掉限定条件、编造不存在的规则或条号。' +
+        '三、答案本身只有一个短词、确实编不出钩子时，hook 写这个词的谐音或拆字，map 说明怎么记，不要硬凑一句话。' +
+        '反例（禁止这样）：hook「公海六大自由要记牢」+ map「公海自由包括航行、捕鱼等六项」——这是复述答案，没有任何钩子。' +
+        '正例：hook「航鱼缆飞研岛」+ map「六字依次对应航行、捕鱼、铺电缆、飞越、科研、建人工岛」。' +
+        '（上面正反例只示范手法，不要套用其内容。）' },
       { role: 'user', content: dataText }
-    ], Object.assign({ maxTokens: 300 }, options));
+    ], Object.assign({ maxTokens: 400 }, options));
     let data;
     try { data = JSON.parse(result.content); } catch (_) { /* 下方统一报告格式错误。 */ }
-    const hook = data && shortText(data.hook, 60);
-    const map = data && shortText(data.map, 100);
+    const hook = data && shortText(data.hook, 80);
+    const map = data && shortText(data.map, 140);
     if (!hook || !map) throw failure('AI 巧记格式异常，请重试或查看题库原解析。', 'INVALID_RESPONSE');
     return { hook: hook, map: map };
   }
