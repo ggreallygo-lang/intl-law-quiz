@@ -1107,7 +1107,79 @@ body {
   border: 1px solid var(--line); border-radius: 10px;
   background: var(--surface); color: var(--text); font: inherit; resize: vertical;
 }
-.ai-result, .recovery-report {
+.recovery-report {
   margin-top: 12px; padding: 12px; border: 1px solid var(--line);
   border-radius: 10px; white-space: pre-wrap; overflow-wrap: anywhere; font-size: 14px;
 }
+
+/* ===== v51：AI 辅助内容改成结构化短卡片（原来是一整段 pre-wrap 纯文本） ===== */
+.ai-result { margin-top: 10px; }
+.ai-note { margin-top: 6px; font-size: 12px; }
+.ai-loading { font-size: 12.5px; color: var(--muted); }
+.ai-error { font-size: 12.5px; color: var(--bad); line-height: 1.5; }
+
+.ai-card {
+  padding: 12px 13px; border: 1px solid var(--line); border-radius: var(--radius);
+  background: var(--surface); box-shadow: var(--shadow-sm);
+}
+.ai-oneline {
+  padding-left: 9px; border-left: 3px solid var(--primary);
+  font-size: 15px; font-weight: 700; line-height: 1.45; color: var(--text);
+}
+.ai-points { margin: 9px 0 0; padding: 0; list-style: none; }
+.ai-points li {
+  position: relative; margin-top: 5px; padding-left: 14px;
+  font-size: 13.5px; line-height: 1.5; color: var(--text);
+}
+.ai-points li::before {
+  content: ''; position: absolute; left: 3px; top: .58em;
+  width: 4px; height: 4px; border-radius: 50%; background: var(--primary); opacity: .55;
+}
+.ai-trap {
+  margin-top: 9px; padding: 7px 10px; border-radius: 9px;
+  background: var(--warn-bg); color: var(--warn); font-size: 13px; line-height: 1.45;
+}
+.ai-trap b { margin-right: 6px; font-weight: 700; }
+.ai-more {
+  display: block; width: 100%; margin-top: 10px; padding: 7px 0;
+  border: 0; background: none; color: var(--muted);
+  font: inherit; font-size: 12.5px; text-align: left; cursor: pointer;
+}
+.ai-more:active { color: var(--primary); }
+.ai-full { margin-top: 8px; padding-top: 9px; border-top: 1px dashed var(--line); }
+.ai-full-text { font-size: 13px; line-height: 1.62; color: var(--text); white-space: pre-wrap; overflow-wrap: anywhere; }
+
+/* 巧记：口诀放大，说明压成一行小字 */
+.ai-hook { font-size: 17px; font-weight: 700; letter-spacing: .5px; line-height: 1.4; color: var(--primary); }
+.ai-map { margin-top: 6px; font-size: 12.5px; line-height: 1.5; color: var(--muted); }
+
+/* ===== v51：举一反三 · 同考点关联题 ===== */
+.rel-block {
+  margin-top: 14px; padding: 11px 12px 4px;
+  border: 1px solid var(--line-primary); border-radius: var(--radius);
+  background: var(--primary-soft);
+}
+.rel-head {
+  display: flex; align-items: baseline; gap: 8px; margin-bottom: 3px;
+  font-size: 13px; font-weight: 700; color: var(--primary);
+}
+.rel-count { font-size: 11.5px; font-weight: 400; color: var(--muted); }
+.rel-row {
+  display: flex; align-items: center; gap: 8px; width: 100%;
+  padding: 9px 0; border: 0; border-top: 1px solid var(--line-soft);
+  background: none; font: inherit; text-align: left; cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
+}
+.rel-row:active { opacity: .6; }
+.rel-tag {
+  flex: 0 0 auto; max-width: 92px; padding: 2px 7px; border-radius: 999px;
+  background: var(--primary); color: var(--on-primary);
+  font-size: 11px; line-height: 1.5;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.rel-stem {
+  flex: 1 1 auto; min-width: 0;
+  font-size: 13px; line-height: 1.45; color: var(--text);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.rel-go { flex: 0 0 auto; font-size: 16px; color: var(--muted); }

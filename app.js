@@ -1543,12 +1543,235 @@
     visualViewport.addEventListener('scroll', syncPracticeViewport);
   }
 
+  // ---------- v51：举一反三 · 本地同考点关联题 ----------
+  // 只认条约名／具体制度名这类专有词，不用「国家」「权利」这种泛词，否则什么题都能串起来。
+  const TOPIC_TERMS = ['东京公约', '海牙公约', '蒙特利尔公约', '芝加哥公约', '维也纳外交关系公约',
+    '维也纳领事关系公约', '维也纳条约法公约', '联合国宪章', '联合国海洋法公约', '国际法院规约',
+    '日内瓦公约', '罗马规约', '世界人权宣言', '南极条约', '外空条约', '巴黎协定',
+    '国家承认', '国家继承', '政府承认', '国家责任', '国家豁免', '主权豁免', '外交特权与豁免',
+    '领事特权与豁免', '外交庇护', '领土庇护', '引渡', '庇护', '国籍', '最惠国待遇', '国民待遇',
+    '普遍优惠待遇', '互惠待遇', '先占', '时效取得', '添附', '割让', '征服', '边界', '界河',
+    '多国河流', '国际河流', '国际运河', '内水', '领海', '毗连区', '专属经济区', '大陆架', '公海',
+    '群岛水域', '国际航行海峡', '紧追权', '登临权', '无害通过', '领空', '航空器', '机长',
+    '劫持航空器', '海盗行为', '海盗', '条约保留', '条约解释', '强行法', '情势变更', '条约缔结',
+    '条约生效', '外交代表', '使馆', '领事馆', '外交信使', '外交邮袋', '不受欢迎的人', '联合国大会',
+    '安全理事会', '安理会', '联大', '否决权', '国际法院', '咨询意见', '战争法', '中立', '战俘', '武装冲突',
+    '人道主义干涉', '自卫权', '武力使用', '国际人权法', '国际刑法', '国际环境法', '国际投资法',
+    // v51 补充：题库里成片出现、但上面没覆盖的成组考点
+    '巴黎航空公约', '属人管辖权', '属地管辖权', '保护性管辖权', '普遍性管辖权',
+    '领土主权', '领空主权', '独立权', '平等权', '不干涉内政', '民族自决',
+    '一般法律原则', '国际法基本原则', '和平共处五项原则', '禁止使用武力', '约定必须遵守',
+    '国家基本权利', '国际不当行为', '反措施', '国际习惯', '国际法渊源',
+    '斡旋', '调停', '国际仲裁', '司法解决', '和平解决争端',
+    '战争罪', '反人道罪', '侵略罪', '永久中立', '中立国',
+    '难民', '不推回原则', '出生地主义', '血统主义', '防空识别区', '月球协定'];
+
+  const topicTermsCache = new Map();
+  function topicTermsOf(q) {
+    if (!q || !q.id) return [];
+    const cached = topicTermsCache.get(q.id);
+    if (cached) return cached;
+    let blob = String(q.stem || '') + ' ' + String(q.term || '') + ' ' + String(q.explanation || '') + ' ' + String(q.chapter || '');
+    try {
+      if (q.type === 'single' || q.type === 'multiple') {
+        // 选择题只认正确选项的文本：干扰项里塞的「国际法院」不是本题考点，
+        // 全读进来会让「考安理会的题」被关联到「国际法院」去。
+        const keys = Scoring.answerKeys(q);
+        if (Array.isArray(q.options)) {
+          for (const o of q.options) {
+            if (o && keys.indexOf(String(o.key || '').trim().toUpperCase()) >= 0) blob += ' ' + String(o.text || '');
+          }
+        }
+      } else {
+        blob += ' ' + Scoring.answerText(q);
+      }
+    } catch (_) { /* 答案异常时退回只用题干与解析匹配 */ }
+    const list = TOPIC_TERMS.filter(t => blob.indexOf(t) >= 0);
+    topicTermsCache.set(q.id, list);
+    return list;
+  }
+
+  // 某个考点在全库出现得越少 = 越具体 = 越值得关联
+  let topicDfCache = { key: '', df: null };
+  function topicDocFreq(pool) {
+    const key = pool.length + '|' + (pool[0] ? pool[0].id : '') + '|' + (pool[pool.length - 1] ? pool[pool.length - 1].id : '');
+    if (topicDfCache.key === key && topicDfCache.df) return topicDfCache.df;
+    const df = Object.create(null);
+    for (const q of pool) for (const t of topicTermsOf(q)) df[t] = (df[t] || 0) + 1;
+    topicDfCache = { key, df };
+    return df;
+  }
+
+  function topicWeight(df) {
+    if (df <= 5) return 10;      // 东京公约、紧追权这种，几乎是同一考点
+    if (df <= 15) return 6;
+    if (df <= 40) return 3;
+    return 1;                    // 国籍、中立这种泛词，单独命中不成立
+  }
+
+  function relatedPool() {
+    if (S.questions && S.questions.length) return S.questions;
+    return (prac && prac.list) || [];
+  }
+
+  // 题库里存在题干完全相同的重复条目，关联时只留一条
+  function stemKeyOf(q) {
+    return String(q && (q.stem || q.term) || '').replace(/[\s，。、（）()？！：:；;"'“”‘’,.!?]/g, '').slice(0, 30);
+  }
+
+  function findRelated(q, limit) {
+    const pool = relatedPool();
+    const mine = topicTermsOf(q);
+    if (!mine.length || pool.length < 2) return [];
+    const df = topicDocFreq(pool);
+    const out = [];
+    for (const other of pool) {
+      if (!other || other.id === q.id) continue;
+      const theirs = topicTermsOf(other);
+      if (!theirs.length) continue;
+      const shared = [];
+      for (const t of mine) if (theirs.indexOf(t) >= 0) shared.push(t);
+      if (!shared.length) continue;
+      const sameChapter = (q.chapterId && other.chapterId === q.chapterId) ||
+        (!q.chapterId && q.chapter && other.chapter === q.chapter);
+      // 只有一个「国籍/中立」这类泛词、又不同章节的，不成立
+      const strong = shared.filter(t => topicWeight(df[t] || 1) >= 6);
+      if (!strong.length && shared.length < 2 && !sameChapter) continue;
+      // 标签用最有区分度的那个考点，不用刚好排在前面的
+      shared.sort((a, b) => topicWeight(df[b] || 1) - topicWeight(df[a] || 1));
+      let score = 0;
+      for (const t of shared) score += topicWeight(df[t] || 1);
+      if (sameChapter) score += 5;
+      if (other.type === q.type) score += 1;
+      if (score < 6) continue;
+      out.push({ q: other, score: score, shared: shared });
+    }
+    out.sort((a, b) => b.score - a.score);
+    const seen = Object.create(null);
+    seen[stemKeyOf(q)] = 1;
+    const picked = [];
+    for (const item of out) {
+      const key = stemKeyOf(item.q);
+      if (!key || seen[key]) continue;
+      seen[key] = 1;
+      picked.push(item);
+      if (picked.length >= (limit || 3)) break;
+    }
+    return picked;
+  }
+
+  function relStem(q) {
+    const s = String(q.type === 'term' ? (q.term || '') : (q.stem || '')).replace(/\s+/g, ' ').trim();
+    return s.length > 40 ? s.slice(0, 40) + '…' : s;
+  }
+
+  function relatedHtml(q) {
+    try {
+      const items = findRelated(q, 3);
+      if (!items.length) return '';
+      const rows = items.map(it => {
+        const tag = (it.shared[0] || '').slice(0, 9);
+        return '<button type="button" class="rel-row" data-rel-jump="' + esc(it.q.id) + '">' +
+          '<span class="rel-tag">' + esc(tag) + '</span>' +
+          '<span class="rel-stem">' + esc(relStem(it.q)) + '</span>' +
+          '<span class="rel-go">›</span></button>';
+      }).join('');
+      return '<div class="rel-block"><div class="rel-head">举一反三<span class="rel-count">同考点 ' + items.length + ' 题</span></div>' + rows + '</div>';
+    } catch (_) { return ''; }
+  }
+
+  function bindRelated() {
+    const box = $('#view-study .rel-block');
+    if (!box || !prac) return;
+    box.querySelectorAll('[data-rel-jump]').forEach(btn => {
+      btn.onclick = () => {
+        if (!prac || prac.locked) return;
+        const id = btn.dataset.relJump;
+        const pool = relatedPool();
+        const target = pool.find(x => x && x.id === id) || prac.list.find(x => x && x.id === id);
+        if (!target) { toast('这道题不在当前题库里'); return; }
+        jumpToRelated(target);
+      };
+    });
+  }
+
+  function jumpToRelated(target) {
+    const cur = prac.list[prac.i];
+    // list 与 results 按下标一一对齐，插入必须成对搬动，否则答案会套到别的题上
+    const pairs = prac.list.map((qq, idx) => [qq, prac.results[idx]]);
+    const found = pairs.findIndex(p => p[0].id === target.id);
+    const item = found >= 0 ? pairs.splice(found, 1)[0] : [target, undefined];
+    const curIdx = pairs.findIndex(p => p[0].id === cur.id);
+    const at = curIdx >= 0 ? curIdx + 1 : pairs.length;
+    pairs.splice(at, 0, item);
+    prac.list = pairs.map(p => p[0]);
+    prac.results = pairs.map(p => p[1]);
+    prac.i = at;
+    prac.locked = false;
+    SFX.flip();
+    saveResume('practice', prac);
+    renderPractice();
+    toast('已切到关联题');
+  }
+
+  // ---------- v51：AI 辅助（结构化短卡片，不再吐大段文字） ----------
   function aiHelpHtml(q) {
     try {
       if (!aiReady || !AI.hasKey() || !Scoring.hasAnswer(q)) return '';
-      return '<div class="ai-help"><div class="btn-row"><button class="btn secondary" data-ai-help="explain">AI 解析</button><button class="btn secondary" data-ai-help="mnemonic">记忆提示 / 巧记</button><button class="btn secondary hidden" data-ai-help="cancel">取消</button></div>' +
-        '<div class="muted" style="font-size:12px">点击才发送当前题目与作答，不发送整库；AI 内容供学习参考。</div><div class="ai-result hidden" data-ai-help-result role="status"></div></div>';
+      return '<div class="ai-help"><div class="btn-row">' +
+        '<button class="btn secondary" data-ai-help="explain">AI 解析</button>' +
+        '<button class="btn secondary" data-ai-help="mnemonic">巧记</button>' +
+        '<button class="btn secondary hidden" data-ai-help="cancel">取消</button></div>' +
+        '<div class="muted ai-note">点按钮才发送本题，不发送整库；AI 内容供参考。</div>' +
+        '<div class="ai-result hidden" data-ai-help-result role="status"></div></div>';
     } catch (_) { return ''; }
+  }
+
+  function renderAiCard(container, kind, data) {
+    if (kind === 'mnemonic') {
+      container.innerHTML = '<div class="ai-card ai-mn"><div class="ai-hook">' + esc(data.hook) + '</div>' +
+        '<div class="ai-map">' + esc(data.map) + '</div></div>';
+      return;
+    }
+    const points = data.points.map(p => '<li>' + esc(p) + '</li>').join('');
+    container.innerHTML = '<div class="ai-card">' +
+      '<div class="ai-oneline">' + esc(data.oneline) + '</div>' +
+      '<ul class="ai-points">' + points + '</ul>' +
+      (data.trap ? '<div class="ai-trap"><b>易错</b>' + esc(data.trap) + '</div>' : '') +
+      '<button type="button" class="ai-more" data-ai-full>展开完整解析 ›</button>' +
+      '<div class="ai-full hidden" data-ai-full-body></div></div>';
+  }
+
+  // 详细版只在用户主动点「展开完整解析」时才发第二次请求，平时不占额度
+  function bindFullExplain(container, q, userAnswer) {
+    const btn = container.querySelector('[data-ai-full]');
+    const body = container.querySelector('[data-ai-full-body]');
+    if (!btn || !body) return;
+    btn.onclick = async () => {
+      if (btn.dataset.loading === '1') return;
+      if (btn.dataset.loaded === '1') {                   // 已拿过全文，之后只做展开/收起
+        const nowHidden = body.classList.toggle('hidden');
+        btn.textContent = nowHidden ? '展开完整解析 ›' : '收起完整解析 ›';
+        return;
+      }
+      btn.dataset.loading = '1';
+      btn.disabled = true;
+      body.classList.remove('hidden');
+      body.innerHTML = '<div class="ai-loading">正在展开…</div>';
+      const controller = new AbortController();
+      try {
+        const text = await AI.explainFull(q, userAnswer, { signal: controller.signal });
+        if (controller.signal.aborted) return;
+        body.innerHTML = '<div class="ai-full-text">' + esc(text) + '</div>';
+        btn.dataset.loaded = '1';
+        btn.textContent = '收起完整解析 ›';
+      } catch (e) {
+        if (!controller.signal.aborted) body.innerHTML = '<div class="ai-error">' + esc(e.message) + '</div>';
+      } finally {
+        btn.disabled = false;
+        btn.dataset.loading = '0';
+      }
+    };
   }
 
   function bindAiHelp(q, userAnswer) {
@@ -1566,12 +1789,19 @@
       buttons.forEach(b => { b.disabled = true; });
       cancel.classList.remove('hidden');
       result.classList.remove('hidden');
-      result.textContent = '正在请求，内容不会修改题库或学习记录…';
+      result.innerHTML = '<div class="ai-loading">正在生成…</div>';
+      const kind = button.dataset.aiHelp;
       try {
-        const text = button.dataset.aiHelp === 'explain' ? await AI.explain(q, userAnswer, { signal: controller.signal }) : await AI.mnemonic(q, { signal: controller.signal });
-        if (!controller.signal.aborted && curView === 'study' && document.contains(box)) result.textContent = text;
+        const data = kind === 'explain'
+          ? await AI.explain(q, userAnswer, { signal: controller.signal })
+          : await AI.mnemonic(q, { signal: controller.signal });
+        if (controller.signal.aborted || curView !== 'study' || !document.contains(box)) return;
+        renderAiCard(result, kind, data);
+        if (kind === 'explain') bindFullExplain(result, q, userAnswer);
       } catch (e) {
-        if (curView === 'study' && document.contains(box)) result.textContent = e.code === 'ABORTED' ? '已取消，可稍后重新请求。' : e.message;
+        if (curView === 'study' && document.contains(box)) {
+          result.innerHTML = '<div class="ai-error">' + esc(e.code === 'ABORTED' ? '已取消，可稍后重新请求。' : e.message) + '</div>';
+        }
       } finally {
         if (aiHelpRequest === controller) aiHelpRequest = null;
         if (document.contains(box)) { buttons.forEach(b => { b.disabled = false; }); cancel.classList.add('hidden'); }
@@ -1750,7 +1980,7 @@
         <div class="feedback ${rec.right ? 'ok' : 'bad'}" style="margin-top:14px;white-space:pre-wrap">${esc(Scoring.answerText(q))}</div>
         <div class="muted" style="margin-top:8px;font-size:13px">${rec.right ? '✓ 当时答对' : '✗ 当时没答对'}（回看）· 你的回答：${esc([].concat(rec.picked || '').join('、'))}</div>` +
         (q.explanation ? `<div class="feedback" style="white-space:pre-wrap">解析：${esc(q.explanation)}</div>` : '') +
-        '<div id="wrongStreakProgress" class="muted"></div>' + aiHelpHtml(q) +
+        '<div id="wrongStreakProgress" class="muted"></div>' + relatedHtml(q) + aiHelpHtml(q) +
         `<div class="btn-row" style="margin-top:14px">` +
         `<button class="btn secondary" id="prevQBtn2" ${prac.i === 0 ? 'disabled' : ''}>‹ 上一题</button></div>` +
         `<div id="practiceActions" class="practice-actions"><div id="practiceSaveStatus" role="status"></div><div id="nextWrap"><button class="btn" id="nextBtn">${prac.i + 1 >= total ? '查看结果 ›' : '下一题 ›'}</button></div></div>`;
@@ -1758,6 +1988,7 @@
       const pb2 = $('#prevQBtn2');
       if (pb2) pb2.onclick = () => { prac.locked = false; prac.i--; renderPractice(); };
       startTimerChip(prac);
+      bindRelated();
       bindAiHelp(q, rec.picked);
       updatePracticeSaveStatus();
     window.scrollTo({ top: 0 });   // v39.2
@@ -1958,7 +2189,8 @@
     if (!Scoring.hasAnswer(q)) {
       html += `<div class="muted" style="margin-top:6px;font-size:13px">⚠️ 这道题没识别到答案，已按「答错」计，建议导出后手工补上</div>`;
     }
-    fb.innerHTML = html + aiHelpHtml(q);
+    fb.innerHTML = html + relatedHtml(q) + aiHelpHtml(q);
+    bindRelated();
     bindAiHelp(q, picked);
     if (right) prac.correct++; else prac.wrongIds.push(q.id);
     // v28：记作答记录（回看用）；回看补答跳过的题要把它从跳过清单里捞回来
