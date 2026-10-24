@@ -160,6 +160,69 @@
     await reqP(s.put(bank));
     return bank;
   }
+
+  // v53：导入归组——「上一次导入」在 10 分钟内的，并进同一个题库，否则新建。
+  // 只认 lastImportAt（导入动作专用），不看 updatedAt：改名、做题都会刷新 updatedAt，
+  // 拿它判窗口会把「刚做完一套题」误判成「刚导入过」，把新文件并进老题库。
+  // 没有 lastImportAt 的历史题库不参与归组 —— 老数据一律当新的处理。
+  const IMPORT_GROUP_WINDOW = 10 * 60 * 1000;
+
+  function mergeOutlineInto(base, extra) {
+    if (!Array.isArray(extra) || !extra.length) return base;
+    if (!Array.isArray(base) || !base.length) return sanitizeOutline(extra);
+    const out = base.slice();
+    const index = new Map();
+    out.forEach(n => { if (n && n.title) index.set(n.title, n); });
+    extra.forEach(n => {
+      if (!n || !n.title) return;
+      const hit = index.get(n.title);
+      if (hit) hit.children = mergeOutlineInto(Array.isArray(hit.children) ? hit.children : [], n.children || []);
+      else {
+        const copy = { id: n.id, title: n.title, level: n.level, children: sanitizeOutline(n.children) || [] };
+        out.push(copy);
+        index.set(copy.title, copy);
+      }
+    });
+    return out;
+  }
+
+  // 窗口判定抽成纯函数，方便离线验证：返回应该并入的题库，没有则 null
+  function pickImportTarget(banks, now, win) {
+    let target = null, bestT = -1;
+    for (const b of (banks || [])) {
+      if (!b || !b.lastImportAt) continue;          // 只让「导入产生的题库」参与归组
+      if (now - b.lastImportAt <= win && b.lastImportAt > bestT) { target = b; bestT = b.lastImportAt; }
+    }
+    return target;
+  }
+
+  /**
+   * 按导入时间窗口归组的保存。返回 { bank, appended }。
+   * appended=true 表示并入了窗口内那个题库，调用方要按需去重题目。
+   */
+  async function saveBankGrouped(name, outline, windowMs) {
+    const now = Date.now();
+    const win = typeof windowMs === 'number' ? windowMs : IMPORT_GROUP_WINDOW;
+    const banks = await listBanks();
+    const target = pickImportTarget(banks, now, win);
+    if (target) {
+      const s = await tx('banks', 'readwrite');
+      const b = await reqP(s.get(target.id));
+      if (b) {
+        b.lastImportAt = now;
+        b.updatedAt = now;
+        const add = outline ? sanitizeOutline(outline) : null;
+        if (add && add.length) b.outline = mergeOutlineInto(Array.isArray(b.outline) ? b.outline : [], add);
+        await reqP(s.put(b));
+        return { bank: b, appended: true };
+      }
+    }
+    const bank = { id: uid(), name: name, outline: outline ? sanitizeOutline(outline) : null,
+      createdAt: now, updatedAt: now, lastImportAt: now, count: 0 };
+    const s2 = await tx('banks', 'readwrite');
+    await reqP(s2.put(bank));
+    return { bank: bank, appended: false };
+  }
   // v30：题库改名（只动 name/updatedAt，题量/目录/进度全不动）
   async function renameBank(id, name) {
     const n = String(name || '').trim().slice(0, 60);
@@ -1506,7 +1569,7 @@
   }
 
   return {
-    open, saveBank, listBanks, getBank, deleteBank, renameBank, sanitizeOutline,
+    open, saveBank, saveBankGrouped, pickImportTarget, mergeOutlineInto, IMPORT_GROUP_WINDOW, listBanks, getBank, deleteBank, renameBank, sanitizeOutline,
     addQuestions, importRecoveredBank, listQuestions, updateQuestion,
     getOutline, deriveOutlineFromQuestions, expandChapterPaths,
     countByChapterPath, applyCounts, chapterKey,

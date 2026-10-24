@@ -141,14 +141,18 @@
       return;
     }
     list.innerHTML = '';
+    const groupWin = DB.IMPORT_GROUP_WINDOW || 10 * 60 * 1000;
     for (const b of banks) {
       const div = document.createElement('div');
       div.className = 'bank-card';
-      const date = new Date(b.updatedAt).toLocaleDateString();
+      // v53：显示「导入于」而不是「更新于」——做题/改名都会刷新 updatedAt，那个日期一直在变，看不出这题库是哪来的
+      const importedAt = b.lastImportAt || b.createdAt || b.updatedAt;
+      const date = new Date(importedAt).toLocaleDateString();
+      const inWindow = b.lastImportAt && (Date.now() - b.lastImportAt <= groupWin);
       div.innerHTML =
         `<span class="del" data-del="${esc(b.id)}">删除</span><span class="ren" data-ren="${esc(b.id)}">改名</span>` +
-        `<div class="name">${esc(b.name)}</div>` +
-        `<div class="meta">${b.count || 0} 题 · 更新于 ${date}</div>`;
+        `<div class="name">${esc(b.name)}${inWindow ? '<span class="merge-flag">⏳ 可并入</span>' : ''}</div>` +
+        `<div class="meta">${b.count || 0} 题 · 导入于 ${date}</div>`;
       div.addEventListener('click', (e) => {
         if (e.target.dataset.del) { e.stopPropagation(); confirmDelete(e.target.dataset.del, b.name); return; }
         if (e.target.dataset.ren) {          // v30：题库改名（只动名字，题目/进度不动）
@@ -2734,28 +2738,46 @@
   }
 
   // 把解析结果落库（文件导入 / 粘贴导入共用）
+  // v53：10 分钟内的连续导入并入同一题库；返回 { count, bankName, appended, duplicate, failed }
   async function saveParsed(text, fallbackName) {
-    if (!text || !text.trim()) return 0;
+    if (!text || !text.trim()) return null;
     const parsed = QuizParser.parseDocument(text);
     accCleaned(parsed.cleaned);
-    if (!parsed.questions.length) return 0;
+    if (!parsed.questions.length) return null;
     const name = parsed.name && parsed.name !== '未命名题库' ? parsed.name
       : (fallbackName || '未命名题库').replace(/\.(md|markdown|txt|text)$/i, '');
     // outline 一并入库，目录结构才不会丢（旧数据读时会自动从题目反推）
-    const bank = await DB.saveBank(name, parsed.outline);
+    // 勾了「强制新建」就传 -1 让窗口判定永远不成立
+    const forceNew = !!($('#forceNewBank') && $('#forceNewBank').checked);
+    const group = await DB.saveBankGrouped(name, parsed.outline, forceNew ? -1 : undefined);
+    const bank = group.bank;
+    let incoming = parsed.questions;
+    // 并进已有题库时，跳过已经在里面的题——同一个文件导两遍不该翻倍
+    if (group.appended) {
+      const existing = await DB.listQuestions(bank.id).catch(() => []);
+      const seen = new Set(existing.map(q => String(q.stem || q.term || '').replace(/\s+/g, '')));
+      incoming = [];
+      for (const q of parsed.questions) {
+        const key = String(q.stem || q.term || '').replace(/\s+/g, '');
+        if (!key || seen.has(key)) continue;
+        seen.add(key);          // 同一份文件内的重复题干也只留一道
+        incoming.push(q);
+      }
+      if (!incoming.length) return { count: 0, bankName: bank.name, appended: true, duplicate: true };
+    }
     try {
-      await DB.addQuestions(bank.id, parsed.questions);
+      await DB.addQuestions(bank.id, incoming);
     } catch (e) {
-      // 题目没写进去就得把刚建的题库删掉，否则会留下一个 0 题的空壳
-      await DB.deleteBank(bank.id).catch(() => {});
+      // 新建的题库写失败要删掉空壳；并入的题库绝不能删——那会把老题一起删光
+      if (!group.appended) await DB.deleteBank(bank.id).catch(() => {});
       if (DB.isQuotaError(e)) {
         reportErr('存储空间不足', new Error('手机存储已满，请先清理空间或删掉不用的题库，再重新导入'));
       } else {
         reportErr('导入失败', e);
       }
-      return 0;
+      return { count: 0, bankName: bank.name, appended: group.appended, failed: true };
     }
-    return parsed.questions.length;
+    return { count: incoming.length, bankName: bank.name, appended: group.appended };
   }
 
   async function handleFiles(files) {
@@ -2763,7 +2785,7 @@
     // fi.value='' 会把它当场清空，第一个 await 挂起期间列表就没了，
     // 异步回来继续迭代直接结束（实测：多选 15 个只导入第 1 个，且无报错）
     const list = Array.from(files || []);
-    let imported = 0, total = 0;
+    let total = 0, created = 0, appendName = '', dupOnly = 0;
     const errBefore = errShown;
     resetCleaned();
     for (let i = 0; i < list.length; i++) {
@@ -2772,11 +2794,22 @@
       // toast() 连续调用会互相接续，导入完由结尾的汇总提示接管
       if (list.length > 1) toast(`导入中 ${i + 1}/${list.length}…`);
       // 单个文件失败（读不了 / 编码问题）不中断其余文件
-      const n = await safe(f.text().then(t => saveParsed(t, f.name)), '读取文件失败') || 0;
-      if (n) { imported++; total += n; }
+      const r = await safe(f.text().then(t => saveParsed(t, f.name)), '读取文件失败');
+      if (r && r.count) {
+        total += r.count;
+        if (r.appended) appendName = r.bankName; else created++;
+      } else if (r && r.duplicate) dupOnly++;
     }
-    if (imported) { toast(`已导入 ${imported} 个题库，共 ${total} 题${cleanedHint()}`); safe(renderHome(), '刷新列表失败'); }
-    else if (errShown === errBefore) toast('没有可导入的内容');   // 已经报过错就别再重复提示
+    if (total) {
+      const parts = [];
+      if (created) parts.push(`新建 ${created} 个题库`);
+      if (appendName) parts.push(`并入《${appendName}》`);
+      toast(`${parts.join('，')}，共 ${total} 题${cleanedHint()}`);
+      safe(renderHome(), '刷新列表失败');
+    } else if (dupOnly) {
+      toast('这些题已经在题库里了，没有重复添加');
+      safe(renderHome(), '刷新列表失败');
+    } else if (errShown === errBefore) toast('没有可导入的内容');   // 已经报过错就别再重复提示
   }
 
   // 粘贴文本导入（OCR「图片转 markdown」产物的主入口：PC 导出 .md → 手机粘贴）
@@ -2787,11 +2820,18 @@
     if (!text.trim()) { toast('先粘贴内容再导入'); return; }
     resetCleaned();
     const errBefore = errShown;
-    const n = await safe(saveParsed(text, name || '粘贴导入的题库'), '导入失败') || 0;
-    if (n) {
-      toast(`已导入 ${n} 题${cleanedHint()}`);
+    const r = await safe(saveParsed(text, name || '粘贴导入的题库'), '导入失败');
+    if (r && r.count) {
+      toast(r.appended
+        ? `已并入《${r.bankName}》，新增 ${r.count} 题${cleanedHint()}`
+        : `已新建题库《${r.bankName}》，共 ${r.count} 题${cleanedHint()}`);
       ta.value = ''; $('#pasteName').value = '';
       // 切回文件视图，让题库列表可见
+      $('#importSeg').querySelector('[data-v="file"]').click();
+      safe(renderHome(), '刷新列表失败');
+    } else if (r && r.duplicate) {
+      toast('这些题已经在题库里了，没有重复添加');
+      ta.value = ''; $('#pasteName').value = '';
       $('#importSeg').querySelector('[data-v="file"]').click();
       safe(renderHome(), '刷新列表失败');
     } else if (errShown === errBefore) {
