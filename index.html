@@ -243,7 +243,7 @@
       </div>
       <div class="field"><label>AI 判题（可选）</label>
         <input type="password" id="aiKeyInput" placeholder="智谱 API Key，留空可停用" autocomplete="off">
-        <input type="text" id="aiModelInput" placeholder="模型名称，如 glm-4-flash" autocomplete="off" style="margin-top:6px">
+        <input type="text" id="aiModelInput" placeholder="模型名称，如 glm-4.7-flash" autocomplete="off" style="margin-top:6px">
         <label for="aiProxyInput" style="display:block;margin-top:10px">自有代理（直连失败时可选）</label>
         <input type="url" id="aiProxyInput" placeholder="https://你的代理.workers.dev/" autocomplete="off" spellcheck="false">
         <label style="display:flex;gap:8px;align-items:flex-start;margin-top:8px;font-size:12px"><input type="checkbox" id="aiProxyConsent" style="width:auto;margin-top:2px">此地址由我管理或信任，同意将 API Key 和当前题目发送到该地址。</label>
@@ -253,6 +253,21 @@
         </div>
         <div id="aiStatus" class="muted" role="status">AI 尚未初始化</div>
         <div class="muted" style="font-size:12px;margin-top:6px">仅发送当前题目、参考答案和作答，不发送整库。代理留空时直连智谱官方接口；填写后只使用该代理，不会自动切换。Key 在本站本机保存，费用以你的账号为准。</div>
+      </div>
+      <div class="field"><label>语音输入（可选，主观题口述作答用）</label>
+        <div class="seg" id="asrProviderSeg">
+          <button data-v="siliconflow">硅基流动 · 免费</button>
+          <button data-v="zhipu">智谱 · 0.06元/分</button>
+        </div>
+        <input type="password" id="asrKeyInput" placeholder="硅基流动 API Key（选智谱时留空即可）" autocomplete="off" style="margin-top:8px">
+        <div class="btn-row" style="margin-top:8px">
+          <button class="btn secondary" id="asrSaveBtn">保存语音配置</button>
+        </div>
+        <div id="asrStatus" class="muted" role="status">语音尚未初始化</div>
+        <div class="muted" style="font-size:12px;margin-top:6px">
+          硅基流动的 SenseVoiceSmall <b>免费不限量</b>，需在 siliconflow.cn 注册并完成实名认证后创建 Key；
+          选智谱则复用上面的 AI Key，按 0.06 元/分钟计费。只在你按麦克风时录音上传，不后台录音。
+        </div>
       </div>
       <div class="field"><label>公开题库恢复</label>
         <button class="btn secondary" id="recoverBanks">检查并补齐公开题目</button>
@@ -380,6 +395,7 @@
   <script src="sfx.js"></script>
   <script src="bgm.js"></script>
   <script src="ai.js"></script>
+  <script src="asr.js"></script>
   <script src="app.js"></script>
   <script>
     if ('serviceWorker' in navigator) {

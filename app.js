@@ -567,6 +567,9 @@
 
   // ---------- 题库详情（统计 + 目录 + 题目列表） ----------
   async function openBank(id) {
+    // v56：从考试页退回题库 = 主动离场。先落一次草稿再收掉 exam，
+    // 下次点「模拟考」会问你要不要接着那场，而不是直接开新卷
+    if (exam) { saveExamDraft(); stopTimer(exam); exam = null; }
     S.mixed = false;                          // v31：进具体题库即退出跨库混合态
     const bank = await DB.getBank(id);
     S.bank = bank;
@@ -687,10 +690,24 @@
         `<span class="ol-toggle">${hasKids ? '▸' : ''}</span>` +
         `<span class="ol-title">${esc(n.title)}${masteryDot(mastery && mastery[n.id])}</span>` +
         `<span class="ol-count">${n.total || 0} 题</span>` +
+        ((n.total || 0) > 0 ? `<button type="button" class="ol-go" data-go="${esc(n.id)}" data-go-title="${esc(n.title)}">练</button>` : '') +
         `</div>` +
         (hasKids ? `<div class="ol-children">${outlineHtml(n.children, depth + 1, mastery)}</div>` : '') +
         `</div>`;
     }).join('');
+  }
+
+  // v54：章节行直接开练——以前要点模式卡、再选「按章节」、再勾章节，五步才能开一道题
+  function startChapterPractice(chapterId, chapterTitle) {
+    if (!S.outline || !S.questions.length) { toast('题库还没加载完'); return; }
+    const paths = DB.expandChapterPaths(S.outline, [chapterId]);
+    const list = S.questions.filter(q => paths.has(DB.chapterKey(q)));
+    if (!list.length) { toast('这一章下面还没有题目'); return; }
+    startMode('practice', list, {
+      title: '章节练习 · ' + chapterTitle,
+      order: localStorage.getItem('ord-practice') || 'rand',
+      source: { kind: 'chapter', chapterId: chapterId }
+    });
   }
 
   async function renderOutlineTree() {
@@ -715,6 +732,11 @@
         box.querySelectorAll('.ol-row').forEach(r => r.classList.toggle('sel', r.dataset.id === S.selectedChapter));
         $('#outlineHint').textContent = S.selectedChapter ? '再点一次取消筛选' : '';
         renderQuestionList($('#qSearch').value);
+      };
+      const goBtn = row.querySelector('.ol-go');
+      if (goBtn) goBtn.onclick = (e) => {
+        e.stopPropagation();          // 别触发整行的「筛选题目列表」
+        startChapterPractice(goBtn.dataset.go, goBtn.dataset.goTitle);
       };
     });
     $('#outlineHint').textContent = '';
@@ -1718,25 +1740,19 @@
     toast('已切到关联题');
   }
 
-  // ---------- v51：AI 辅助（结构化短卡片，不再吐大段文字） ----------
+  // ---------- v54：AI 解析（只留简洁版 + 按需展开详细版） ----------
   function aiHelpHtml(q) {
     try {
       if (!aiReady || !AI.hasKey() || !Scoring.hasAnswer(q)) return '';
       return '<div class="ai-help"><div class="btn-row">' +
         '<button class="btn secondary" data-ai-help="explain">AI 解析</button>' +
-        '<button class="btn secondary" data-ai-help="mnemonic">巧记</button>' +
         '<button class="btn secondary hidden" data-ai-help="cancel">取消</button></div>' +
         '<div class="muted ai-note">点按钮才发送本题，不发送整库；AI 内容供参考。</div>' +
         '<div class="ai-result hidden" data-ai-help-result role="status"></div></div>';
     } catch (_) { return ''; }
   }
 
-  function renderAiCard(container, kind, data) {
-    if (kind === 'mnemonic') {
-      container.innerHTML = '<div class="ai-card ai-mn"><div class="ai-hook">' + esc(data.hook) + '</div>' +
-        '<div class="ai-map">' + esc(data.map) + '</div></div>';
-      return;
-    }
+  function renderAiCard(container, data) {
     const points = data.points.map(p => '<li>' + esc(p) + '</li>').join('');
     container.innerHTML = '<div class="ai-card">' +
       '<div class="ai-oneline">' + esc(data.oneline) + '</div>' +
@@ -1794,14 +1810,11 @@
       cancel.classList.remove('hidden');
       result.classList.remove('hidden');
       result.innerHTML = '<div class="ai-loading">正在生成…</div>';
-      const kind = button.dataset.aiHelp;
       try {
-        const data = kind === 'explain'
-          ? await AI.explain(q, userAnswer, { signal: controller.signal })
-          : await AI.mnemonic(q, { signal: controller.signal });
+        const data = await AI.explain(q, userAnswer, { signal: controller.signal });
         if (controller.signal.aborted || curView !== 'study' || !document.contains(box)) return;
-        renderAiCard(result, kind, data);
-        if (kind === 'explain') bindFullExplain(result, q, userAnswer);
+        renderAiCard(result, data);
+        bindFullExplain(result, q, userAnswer);
       } catch (e) {
         if (curView === 'study' && document.contains(box)) {
           result.innerHTML = '<div class="ai-error">' + esc(e.code === 'ABORTED' ? '已取消，可稍后重新请求。' : e.message) + '</div>';
@@ -1817,6 +1830,15 @@
     const status = $('#aiStatus');
     try {
       if (!window.AI) throw new Error('判题模块未加载');
+      // v57：老版本默认写的是 glm-4-flash，智谱现在的免费模型是 glm-4.7-flash（同样免费、能力更强）。
+      // 只在「值恰好还是那个旧默认」时才替用户换掉，用户自己填的模型名一律不动。
+      try {
+        const savedModel = (localStorage.getItem('ai-model') || '').trim();
+        if (savedModel === 'glm-4-flash') {
+          localStorage.setItem('ai-model', 'glm-4.7-flash');
+          toast('AI 模型已升级到 glm-4.7-flash（同样免费，判卷更准）');
+        }
+      } catch (_) { /* 存储不可用就跳过，用默认值 */ }
       $('#aiKeyInput').value = AI.getKey();
       $('#aiModelInput').value = AI.getModel();
       $('#aiProxyInput').value = AI.getProxy();
@@ -1841,7 +1863,7 @@
         try {
           const proxy = AI.validateProxy($('#aiProxyInput').value);
           AI.validateKey($('#aiKeyInput').value);
-          if ($('#aiKeyInput').value.trim() !== AI.getKey() || ($('#aiModelInput').value.trim() || 'glm-4-flash') !== AI.getModel() || proxy !== AI.getProxy()) {
+          if ($('#aiKeyInput').value.trim() !== AI.getKey() || ($('#aiModelInput').value.trim() || 'glm-4.7-flash') !== AI.getModel() || proxy !== AI.getProxy()) {
             status.textContent = '输入框有未保存的修改，请先点“保存配置”再测试。'; return;
           }
         } catch (e) { status.textContent = e.message; return; }
@@ -1860,6 +1882,115 @@
       $('#aiTestBtn').disabled = true;
       console.warn('[AI] 初始化失败，基础功能继续运行');
     }
+  }
+
+  // ---------- v55：语音输入（主观题口述作答） ----------
+  let voiceRec = null;          // 正在进行的录音句柄，切题/离开时必须停掉
+  let voiceBusy = false;        // 转写请求进行中，防重复点
+
+  async function stopVoiceIfAny() {
+    if (!voiceRec) return;
+    try { voiceRec.cancel(); } catch (_) {}
+    voiceRec = null;
+  }
+
+  function initAsr() {
+    const status = $('#asrStatus');
+    if (!status) return;
+    try {
+      if (!window.ASR) throw new Error('语音模块未加载');
+      const seg = $('#asrProviderSeg');
+      const syncSeg = () => {
+        const cur = ASR.getProvider();
+        seg.querySelectorAll('button').forEach(b => b.classList.toggle('on', b.dataset.v === cur));
+        const info = ASR.providerInfo();
+        const has = ASR.hasKey();
+        $('#asrKeyInput').value = ASR.getKey('siliconflow');
+        $('#asrKeyInput').placeholder = cur === 'zhipu'
+          ? '选智谱时这里可以留空，直接用上面的 AI Key'
+          : '硅基流动 API Key（免费，需实名）';
+        status.textContent = has
+          ? '已配置：' + info.label + ' · ' + info.model
+          : '未配置：' + info.note;
+      };
+      seg.querySelectorAll('button').forEach(b => {
+        b.onclick = () => {
+          try { ASR.setProvider(b.dataset.v); syncSeg(); }
+          catch (e) { status.textContent = e.message; }
+        };
+      });
+      $('#asrSaveBtn').onclick = () => {
+        try {
+          const cur = ASR.getProvider();
+          if (cur === 'siliconflow') ASR.setKey($('#asrKeyInput').value, 'siliconflow');
+          syncSeg();
+          toast(ASR.hasKey() ? '语音配置已保存' : '语音配置已清空');
+        } catch (e) { status.textContent = '保存失败：' + e.message; }
+      };
+      syncSeg();
+    } catch (e) {
+      status.textContent = '语音暂不可用：' + e.message;
+    }
+  }
+
+  function voiceHtml() {
+    if (!window.ASR) return '';
+    return '<div class="voice-row">' +
+      '<button type="button" class="voice-btn" id="voiceBtn">🎤 语音输入</button>' +
+      '<span class="voice-hint" id="voiceHint">点一下开始说，再点一下转文字</span></div>';
+  }
+
+  function bindVoiceInput(q) {
+    const btn = $('#voiceBtn');
+    const hint = $('#voiceHint');
+    if (!btn) return;
+    btn.onclick = async () => {
+      if (voiceBusy) return;
+      const ta = $('#essayInput');
+      if (!ta) return;
+      // 已在录音 → 停止并转写
+      if (voiceRec) {
+        const cur = voiceRec;
+        voiceRec = null;
+        voiceBusy = true;
+        btn.textContent = '转写中…';
+        btn.classList.remove('recording');
+        btn.disabled = true;
+        if (hint) hint.textContent = '正在上传识别，稍等…';
+        try {
+          const blob = await cur.stop();
+          const text = await ASR.transcribe(blob);
+          ta.value = (ta.value ? ta.value.replace(/\s*$/, '') + ' ' : '') + text;
+          exam.answers[q.id] = { q: q, value: ta.value.trim(), type: q.type };
+          if (hint) hint.textContent = '已插入 ' + text.length + ' 个字，可以接着说';
+        } catch (e) {
+          if (hint) hint.textContent = e.message;
+          toast(e.message);
+        } finally {
+          voiceBusy = false;
+          btn.disabled = false;
+          btn.textContent = '🎤 语音输入';
+        }
+        return;
+      }
+      // 未录音 → 开始
+      if (!ASR.hasKey()) {
+        toast(ASR.getProvider() === 'zhipu'
+          ? '先在上面的「AI 判题」里填好智谱 Key'
+          : '先去设置里填硅基流动 Key（免费，需实名）');
+        return;
+      }
+      try {
+        voiceRec = await ASR.startRecording();
+        btn.textContent = '⏹ 点击结束';
+        btn.classList.add('recording');
+        if (hint) hint.textContent = '正在录音…说完点一下按钮';
+      } catch (e) {
+        voiceRec = null;
+        toast(e.message);
+        if (hint) hint.textContent = e.message;
+      }
+    };
   }
 
   function aiGradeHtml(q) {
@@ -2403,43 +2534,225 @@
 
   // ---------- 考试模式 ----------
   let exam = null;
+  // ---------- v54：模拟考（00247 国际法真实卷面） ----------
+  // 2021 年起全国统一命题结构：41 题 / 100 分 / 150 分钟。
+  // 注意 2020 年 10 月及更早是另一套（单选20+名词解释4+案例2×12），这里按新版做。
+  const EXAM_PAPER = [
+    { key: 'single', label: '单项选择题', n: 30, per: 1 },
+    { key: 'multiple', label: '多项选择题', n: 5, per: 2 },
+    { key: 'short', label: '简答题', n: 4, per: 8 },
+    { key: 'essay', label: '论述题', n: 1, per: 14 },
+    { key: 'case', label: '案例分析题', n: 1, per: 14 }
+  ];
+  const EXAM_MINUTES = 150;
+  const EXAM_CASE_RE = /案例|案情|甲乙|A\s*国|B\s*国|某国|丁国|蔷薇号|翡翠号/;
+  const EXAM_DISCUSS_RE = /论述|试述|试论|谈一谈|谈谈|评析|结合实际/;
+
+  function examSectionOf(q) {
+    if (q.type === 'single') return 'single';
+    if (q.type === 'multiple') return 'multiple';
+    if (q.type === 'term') return 'short';
+    if (q.type === 'essay') {
+      const s = String(q.stem || '');
+      if (EXAM_CASE_RE.test(s)) return 'case';
+      if (EXAM_DISCUSS_RE.test(s)) return 'essay';
+      return 'short';
+    }
+    return null;                       // judge / fill 不进这份卷
+  }
+
+  // 题库里存在题干完全相同的重复条目（如「试论国家的管辖权」有两份），
+  // 不去重的话同一份卷子会抽到同一道题两次，白丢 8 分。
+  function dedupeByStem(list) {
+    const seen = Object.create(null);
+    const out = [];
+    for (const q of list) {
+      const k = String(q.stem || q.term || '').replace(/\s+/g, '');
+      if (!k || seen[k]) continue;
+      seen[k] = 1;
+      out.push(q);
+    }
+    return out;
+  }
+
+  // 按卷面配额抽题；某类不够就少抽，绝不重复凑数
+  function buildExamPaper(pool) {
+    const buckets = { single: [], multiple: [], short: [], essay: [], case: [] };
+    // 先全局去重再分桶：同一道题可能被题库存成单选和多选各一份，桶内去重拦不住
+    dedupeByStem(pool || []).forEach(q => {
+      const sec = examSectionOf(q);
+      if (sec && buckets[sec]) buckets[sec].push(q);
+    });
+    const paper = [];
+    EXAM_PAPER.forEach(sec => {
+      shuffle(buckets[sec.key]).slice(0, sec.n).forEach(q => {
+        paper.push({ q: q, sec: sec.key, per: sec.per, label: sec.label });
+      });
+    });
+    return paper;
+  }
+
+  // ---------- v56：考试草稿（切后台 / 被系统回收都不丢） ----------
+  // 典型场景：答题时切到别的 App 用语音转文字，再切回来粘贴。安卓很可能在后台把页面回收掉，
+  // 不存草稿的话整场考试连同已写的答案全部消失。
+  const EXAM_DRAFT_KEY = 'exam-draft';
+  const EXAM_DRAFT_TTL = 24 * 3600 * 1000;
+  let draftTimer = null;
+
+  function saveExamDraft() {
+    if (!exam || !exam.paper || !S.bank) return;
+    try {
+      const draft = {
+        v: 1,
+        bankId: S.bank.id,
+        qids: exam.list.map(q => q.id),
+        secs: exam.paper.map(p => ({ sec: p.sec, per: p.per, label: p.label })),
+        answers: {},
+        i: exam.i,
+        min: exam.min,
+        leftMs: Math.max(0, exam.endAt - Date.now()),
+        msPer: exam.msPer || {},
+        savedAt: Date.now()
+      };
+      Object.keys(exam.answers).forEach(k => {
+        const a = exam.answers[k];
+        if (a) draft.answers[k] = { value: a.value, type: a.type };   // 只存值，题目从题库查回
+      });
+      localStorage.setItem(EXAM_DRAFT_KEY, JSON.stringify(draft));
+    } catch (_) { /* 存储满了也不能挡住考试 */ }
+  }
+  function saveExamDraftSoon() {
+    clearTimeout(draftTimer);
+    draftTimer = setTimeout(saveExamDraft, 400);   // 打字防抖，别每个字都写一遍
+  }
+  function loadExamDraft() {
+    try {
+      const raw = localStorage.getItem(EXAM_DRAFT_KEY);
+      if (!raw) return null;
+      const d = JSON.parse(raw);
+      if (!d || d.v !== 1 || !Array.isArray(d.qids) || !d.qids.length) return null;
+      if (Date.now() - (d.savedAt || 0) > EXAM_DRAFT_TTL) { localStorage.removeItem(EXAM_DRAFT_KEY); return null; }
+      return d;
+    } catch (_) { return null; }
+  }
+  function clearExamDraft() {
+    clearTimeout(draftTimer);
+    try { localStorage.removeItem(EXAM_DRAFT_KEY); } catch (_) {}
+  }
+
+  async function resumeExamDraft(d) {
+    try {
+      const bank = await DB.getBank(d.bankId);
+      if (!bank) { toast('题库已被删除，这场考试作废'); clearExamDraft(); return; }
+      S.bank = bank;
+      S.questions = await DB.listQuestions(bank.id);
+      const map = new Map(S.questions.map(q => [q.id, q]));
+      const list = [], paper = [];
+      d.qids.forEach((qid, idx) => {
+        const q = map.get(qid);
+        if (!q) return;
+        const meta = (d.secs && d.secs[idx]) || { sec: examSectionOf(q), per: 0, label: '' };
+        list.push(q);
+        paper.push({ q: q, sec: meta.sec, per: meta.per, label: meta.label });
+      });
+      if (!list.length) { toast('这场考试的题目找不到了，草稿作废'); clearExamDraft(); return; }
+      const leftMs = Math.max(0, d.leftMs || 0);
+      exam = {
+        list: list, paper: paper, i: Math.min(d.i || 0, list.length - 1),
+        min: d.min || EXAM_MINUTES,
+        answers: {}, endAt: Date.now() + leftMs,
+        startAt: Date.now() - ((d.min || EXAM_MINUTES) * 60000 - leftMs),
+        timer: null, msPer: d.msPer || {}, enterTs: 0, warned: false
+      };
+      Object.keys(d.answers || {}).forEach(qid => {
+        const v = d.answers[qid];
+        const q = map.get(qid);
+        if (q && v) exam.answers[qid] = { q: q, value: v.value, type: v.type };
+      });
+      setBack('bank', '‹ 题库');
+      $('#title').textContent = '考试中';
+      renderExam();
+      toast('已接续上次的考试，剩余时间没走');
+    } catch (e) {
+      toast('恢复考试失败：' + e.message);
+    }
+  }
+
+  async function offerExamResume() {
+    const d = loadExamDraft();
+    if (!d) return;
+    const total = d.qids.length;
+    const mins = Math.round((d.leftMs || 0) / 60000);
+    const answered = Object.keys(d.answers || {}).filter(k => {
+      const v = d.answers[k] && d.answers[k].value;
+      return v != null && v !== '' && !(Array.isArray(v) && !v.length);
+    }).length;
+    const ok = confirm(
+      `有一场模拟考还没交卷：\n\n` +
+      `做到第 ${Math.min((d.i || 0) + 1, total)}/${total} 题，已作答 ${answered} 题\n` +
+      `剩余时间 ${mins} 分钟（切后台期间不计时）\n\n` +
+      `继续这场考试吗？\n选「取消」会保留草稿，下次打开再问。`);
+    if (ok) await resumeExamDraft(d);
+  }
+
+  // 切到后台先存一份并暂停计时；回来把暂停的时长补回去
+  document.addEventListener('visibilitychange', function () {
+    if (!exam) return;
+    if (document.hidden) {
+      exam.pausedAt = Date.now();
+      accExamMs();
+      saveExamDraft();
+    } else if (exam.pausedAt) {
+      const gap = Date.now() - exam.pausedAt;
+      exam.pausedAt = 0;
+      if (exam.min > 0) exam.endAt += gap;      // 切去用别的 App 的时间不算考试时间
+      exam.startAt += gap;
+      if (!exam.enterTs) exam.enterTs = Date.now();
+      saveExamDraft();
+    }
+  });
+
   async function startExamSetup() {
     if (!await ensurePracticeSaved()) return;
+    // v56：有没交卷的草稿就先问，别一声不响地开新卷把旧答案冲掉
+    const pending = loadExamDraft();
+    if (pending && pending.bankId === (S.bank && S.bank.id)) {
+      const total = pending.qids.length;
+      const mins = Math.round((pending.leftMs || 0) / 60000);
+      const go = confirm(`上次这场模拟考还没交卷（第 ${Math.min((pending.i || 0) + 1, total)}/${total} 题，剩余 ${mins} 分钟）。\n\n点「确定」接着做，点「取消」重新开一张新卷（旧答案会作废）。`);
+      if (go) { await resumeExamDraft(pending); return; }
+      clearExamDraft();
+    }
     cleanupStudy();
     $('#view-study').classList.remove('practice-view', 'has-save-error');
     setBack('bank', '‹ 题库');
-    $('#title').textContent = '考试设置';
-    // 可自动判分的题：客观题 + 填空。
-    // 答案过长的填空已降级为自评（scoring.isSelfAssess），不进考试。
-    const gradable = S.pool.filter(q => {
-      if (q.type === 'single' || q.type === 'multiple' || q.type === 'judge') return true;
-      return q.type === 'fill' && !Scoring.isSelfAssess(q);
-    });
+    $('#title').textContent = '模拟考';
     const view = $('#view-study'); showView('study');
-    if (!gradable.length) { toast('本题库没有可计分的客观题'); openBank(S.bank.id); return; }
-    const settings = { n: 'all', min: 0, shuffleOpt: true };
+    const paper = buildExamPaper(S.pool);
+    if (!paper.length) { toast('本题库里没有可用于模拟考的题目'); openBank(S.bank.id); return; }
+    const got = {};
+    paper.forEach(x => { got[x.sec] = (got[x.sec] || 0) + 1; });
+    const fullScore = paper.reduce((n, x) => n + x.per, 0);
+    const rows = EXAM_PAPER.map(sec => {
+      const n = got[sec.key] || 0;
+      const lack = n < sec.n;
+      return `<div class="paper-row"><span class="paper-name">${sec.label}</span>` +
+        `<span class="paper-n${lack ? ' lack' : ''}">${n} / ${sec.n} 题</span>` +
+        `<span class="paper-score">${n * sec.per} 分</span></div>`;
+    }).join('');
     view.innerHTML =
-      `<h3 style="margin-top:0">⏱️ 考试设置</h3>
-      <div class="field"><label>题量</label><div class="seg" id="segN">
-        <button data-v="all" class="on">全部(${gradable.length})</button>
-        <button data-v="20">随机20</button><button data-v="50">随机50</button><button data-v="100">随机100</button>
-      </div></div>
-      <div class="field"><label>时长（分钟，0 = 不限时）</label>
-        <input type="number" id="examMin" min="0" step="1" value="0" /></div>
-      <div class="field"><label>选项乱序</label><div class="seg" id="segOpt">
-        <button data-v="1" class="on">开</button><button data-v="0">关</button></div></div>
-      <button class="btn" id="startExam">开始考试 ›</button>`;
-    $('#segN').querySelectorAll('button').forEach(b => b.onclick = () => {
-      $('#segN').querySelectorAll('button').forEach(x => x.classList.remove('on')); b.classList.add('on'); settings.n = b.dataset.v;
-    });
-    $('#segOpt').querySelectorAll('button').forEach(b => b.onclick = () => {
-      $('#segOpt').querySelectorAll('button').forEach(x => x.classList.remove('on')); b.classList.add('on'); settings.shuffleOpt = b.dataset.v === '1';
-    });
+      `<h3 style="margin-top:0">⏱️ 模拟考 · 00247 国际法</h3>
+      <div class="muted" style="font-size:13px;margin-bottom:12px">按 2021 年起全国统一命题卷面：41 题 / 100 分 / ${EXAM_MINUTES} 分钟。</div>
+      <div class="paper-table">${rows}<div class="paper-row paper-total"><span class="paper-name">合计</span><span class="paper-n">${paper.length} 题</span><span class="paper-score">${fullScore} 分</span></div></div>
+      ${fullScore < 100 ? `<div class="muted" style="font-size:12.5px;margin-top:10px">⚠️ 题库里某几类题不够，卷面按实际题量折算，共 ${fullScore} 分。</div>` : ''}
+      <div class="muted" style="font-size:12.5px;margin-top:10px">客观题（40 分）交卷即判；主观题（60 分）交卷后由 AI 逐题判分。</div>
+      <button class="btn" id="startExam" style="margin-top:16px">开始考试 ›</button>`;
     $('#startExam').onclick = () => {
-      let list = gradable;
-      if (settings.n !== 'all') { const k = Math.min(+settings.n, list.length); list = shuffle(list).slice(0, k); }
-      exam = { list, i: 0, min: Math.max(0, +$('#examMin').value || 0), shuffleOpt: settings.shuffleOpt, answers: {}, endAt: 0, startAt: Date.now(), timer: null, msPer: {}, enterTs: 0, warned: false };
-      if (exam.min > 0) exam.endAt = Date.now() + exam.min * 60000;
+      exam = { list: paper.map(x => x.q), paper: paper, i: 0, min: EXAM_MINUTES,
+        answers: {}, endAt: 0, startAt: Date.now(), timer: null, msPer: {}, enterTs: 0, warned: false };
+      exam.endAt = Date.now() + EXAM_MINUTES * 60000;
+      clearExamDraft();            // 开新卷前先清掉旧草稿，避免下次误恢复
+      saveExamDraft();
       setBack('bank', '‹ 题库'); $('#title').textContent = '考试中';
       renderExam();
     };
@@ -2453,6 +2766,8 @@
   }
   function renderExam() {
     const view = $('#view-study'); showView('study');
+    // 切题/重绘时若有录音在跑，先停掉，否则麦克风会一直开着
+    if (voiceRec) { try { voiceRec.cancel(); } catch (_) {} voiceRec = null; }
     if (exam) exam.locked = false;        // v14：每题渲染时解锁，防连点连跳
     if (exam.i >= exam.list.length) return submitExam();
     const q = exam.list[exam.i];
@@ -2482,7 +2797,13 @@
       }
     }, 1000);
     let body = '';
-    if (q.type === 'judge') {
+    if (q.type === 'essay' || q.type === 'term') {
+      const sec = examSectionOf(q);
+      const info = EXAM_PAPER.find(s => s.key === sec) || { label: TYPE_LABEL[q.type] || '主观题', per: 0 };
+      const saved = exam.answers[q.id] ? exam.answers[q.id].value : '';
+      body = `<div class="q-stem"><span class="qnum">${timerHtml}${esc(info.label)} ${exam.i + 1}/${total}　${info.per} 分</span>${esc(q.stem)}</div>
+        <textarea class="exam-essay" id="essayInput" rows="9" placeholder="在这里作答，分点写清楚。交卷后由 AI 判分。">${esc(saved)}</textarea>` + voiceHtml();
+    } else if (q.type === 'judge') {
       body = `<div class="q-stem"><span class="qnum">${timerHtml}判断题 ${exam.i + 1}/${total}</span>${esc(q.stem)}</div>
         <div class="option" data-v="1"><span class="key">✓</span> 对</div>
         <div class="option" data-v="0"><span class="key">✗</span> 错</div>`;
@@ -2500,6 +2821,7 @@
     view.innerHTML =
       `<div class="progress-top"><span class="pnum">${exam.i + 1}/${total}</span><div class="progress-bar"><span style="width:${(exam.i / total) * 100}%"></span></div></div>` +
       `<div class="study-body slide-in">${body}</div>` +
+      (exam.i === 0 ? '<div class="muted exam-autosave">💾 答案自动存在本机，切到别的 App 或关掉页面都不会丢；回来会接着上次继续</div>' : '') +
       `<div id="examNav" class="btn-row" style="margin-top:14px">
         <button class="btn secondary" id="prevBtn">上一题</button>
         <button class="btn" id="nextExamBtn">${exam.i + 1 >= total ? '交卷' : '下一题 ›'}</button>
@@ -2511,19 +2833,30 @@
         const v = q.type === 'judge' ? +op.dataset.v : op.dataset.k;
         exam.answers[q.id] = { q, value: q.type === 'multiple' ? (exam.answers[q.id] ? toggle(exam.answers[q.id].value, v) : [v]) : v, type: q.type };
         if (q.type === 'multiple') renderExamMulti(q);
+        saveExamDraft();
       };
     });
     // 填空题：边打字边存，切题/交卷都不丢
     if (q.type === 'fill') {
       const inp = $('#fillInput');
-      const save = () => { exam.answers[q.id] = { q: q, value: (inp.value || '').trim(), type: 'fill' }; };
+      const save = () => { exam.answers[q.id] = { q: q, value: (inp.value || '').trim(), type: 'fill' }; saveExamDraftSoon(); };
       inp.oninput = save;
       inp.onchange = save;
       inp.onkeydown = (e) => { if (e.key === 'Enter') { save(); const n = $('#nextExamBtn'); if (n) n.click(); } };
     }
+    // 主观题：同样边写边存，切题不丢
+    if (q.type === 'essay' || q.type === 'term') {
+      const ta = $('#essayInput');
+      if (ta) {
+        const save = () => { exam.answers[q.id] = { q: q, value: (ta.value || '').trim(), type: q.type }; saveExamDraftSoon(); };
+        ta.oninput = save;
+        ta.onblur = save;
+      }
+      bindVoiceInput(q);
+    }
     $('#prevBtn').onclick = () => {
       if (exam.locked) return;
-      if (exam.i > 0) { exam.locked = true; accExamMs(); exam.i--; renderExam(); }
+      if (exam.i > 0) { exam.locked = true; accExamMs(); saveExamDraft(); exam.i--; renderExam(); }
     };
     $('#nextExamBtn').onclick = () => {
       if (exam.i + 1 >= total) {
@@ -2535,7 +2868,7 @@
         const msg = un > 0 ? `还有 ${un} 题未作答，确定交卷吗？（未答按错计）` : '确定交卷？';
         if (confirm(msg)) submitExam();
       }
-      else { if (exam.locked) return; exam.locked = true; accExamMs(); exam.i++; renderExam(); }
+      else { if (exam.locked) return; exam.locked = true; accExamMs(); saveExamDraft(); exam.i++; renderExam(); }
     };
     exam.enterTs = Date.now();
   }
@@ -2551,59 +2884,128 @@
   }
   async function submitExam() {
     if (!exam) return;                     // 已经离开考试页（定时器晚到一步）时直接忽略
+    if (voiceRec) { try { voiceRec.cancel(); } catch (_) {} voiceRec = null; }
+    clearExamDraft();                      // 交卷了，草稿作废
     stopTimer(exam);
+    clearInterval(exam.timer); exam.timer = null;
     accExamMs();                           // 结算最后一题（或超时那一刻）的停留时长
-    let correct = 0; const wrongList = [];
-    const byChapter = {};
-    const updates = [];                 // 待写进度，稍后一次性批量提交
-    const sessList = [];                // F2：待写作答流水，结果渲染完再入库
-    exam.list.forEach(q => {
-      const a = exam.answers[q.id];
-      const ok = a ? Scoring.isRight(q, a.value) : false;
-      const c = byChapter[q.chapter] = byChapter[q.chapter] || { total: 0, correct: 0 };
-      c.total++; if (ok) { correct++; c.correct++; }
-      if (!ok) wrongList.push({ q, user: a });
-      updates.push({ qid: q.id, ok: ok });
-      sessList.push({ bankId: S.bank.id, qid: q.id, mode: 'exam', right: ok, ms: exam.msPer[q.id] || 0 });
-    });
-    const total = exam.list.length;
-    const score = total ? Math.round(correct / total * 100) : 0;
-    // v21：答题用时 = 每题停留时长之和（不含发呆/切走的时间，是「纯做题」口径）
-    const usedMs = Object.keys(exam.msPer || {}).reduce((n, k) => n + (exam.msPer[k] || 0), 0);
     const view = $('#view-study');
-    let chapterHtml = '';
-    Object.keys(byChapter).forEach(ch => {
-      const c = byChapter[ch]; const pct = c.total ? Math.round(c.correct / c.total * 100) : 0;
-      chapterHtml += `<div class="chapter-stat"><div>${esc(ch)} — 正确率 ${pct}%（${c.correct}/${c.total}）</div>
-        <div class="bar"><span style="width:${pct}%"></span></div></div>`;
+    const paper = exam.paper || [];
+    const results = [];
+    let objScore = 0;
+    // 1) 客观题立即判，主观题先登记待判
+    exam.list.forEach((q, idx) => {
+      const meta = paper[idx] || { sec: examSectionOf(q), per: 0, label: TYPE_LABEL[q.type] || '' };
+      const a = exam.answers[q.id];
+      const subjective = (q.type === 'essay' || q.type === 'term');
+      if (subjective) {
+        results.push({ q: q, meta: meta, objective: false, answer: a ? a.value : '', got: 0, ok: null, graded: false });
+      } else {
+        const ok = a ? Scoring.isRight(q, a.value) : false;
+        if (ok) objScore += meta.per || 0;
+        results.push({ q: q, meta: meta, objective: true, ok: ok, got: ok ? (meta.per || 0) : 0, picked: a ? a.value : '' });
+      }
     });
-    let wrongHtml = '';
-    const noAns = [];
-    wrongList.forEach(w => {
-      if (!Scoring.hasAnswer(w.q)) noAns.push(w.q);
-      wrongHtml += `<div class="wrong-item"><div>${esc(w.q.stem || w.q.term)}</div>
-        <div class="a">${ansBanner(w.q, false)}</div>
-        ${w.q.explanation ? `<div class="muted" style="font-size:13px;margin-top:4px">解析：${esc(w.q.explanation)}</div>` : ''}</div>`;
+    const subs = results.filter(r => !r.objective);
+    const hasAI = aiReady && AI.hasKey();
+    const maxScore = results.reduce((n, r) => n + (r.meta.per || 0), 0) || 100;
+
+    // 2) 主观题交给 AI 逐题判，中间给进度（6 道题要等十几秒，不能干站着）
+    if (subs.length && hasAI) {
+      view.innerHTML =
+        `<h3 style="margin-top:0">正在判主观题…</h3>
+        <div class="muted" id="gradeHint" style="font-size:13px">准备中…</div>
+        <div class="bar" style="margin-top:12px"><span id="gradeBar" style="width:0%"></span></div>
+        <div class="muted" style="font-size:12px;margin-top:12px">每道题会单独发一次请求，判完自动出成绩。中途别关页面。</div>`;
+      for (let i = 0; i < subs.length; i++) {
+        const r = subs[i];
+        const hint = $('#gradeHint');
+        if (hint) hint.textContent = `第 ${i + 1} / ${subs.length} 题：${r.meta.label || '主观题'}`;
+        const bar = $('#gradeBar');
+        if (bar) bar.style.width = Math.round(i / subs.length * 100) + '%';
+        if (!String(r.answer || '').trim()) { r.note = '未作答，按 0 分'; r.graded = true; continue; }
+        try {
+          const g = await AI.grade(r.q, r.answer);
+          const ratio = g.verdict === 'correct' ? 1 : (g.verdict === 'partial' ? 0.5 : (g.verdict === 'uncertain' ? 0.5 : 0));
+          r.got = Math.round((r.meta.per || 0) * ratio);
+          r.ok = g.verdict === 'correct';
+          r.verdict = g.verdict;
+          r.note = g.explanation + (g.missingPoints && g.missingPoints.length ? '｜缺：' + g.missingPoints.join('；') : '');
+          r.graded = true;
+        } catch (e) {
+          r.note = '判分失败：' + (e.message || '未知错误');
+          r.graded = false;
+        }
+      }
+      const bar = $('#gradeBar');
+      if (bar) bar.style.width = '100%';
+    } else if (subs.length) {
+      subs.forEach(r => { r.note = '未配置 AI Key，这道题没有判分'; });
+    }
+
+    // 3) 汇总
+    const subScore = subs.reduce((n, r) => n + r.got, 0);
+    const objList = results.filter(r => r.objective);
+    const objMax = objList.reduce((n, r) => n + (r.meta.per || 0), 0);
+    const subMax = subs.reduce((n, r) => n + (r.meta.per || 0), 0);
+    const totalScore = objScore + subScore;
+    const usedMs = Object.keys(exam.msPer || {}).reduce((n, k) => n + (exam.msPer[k] || 0), 0);
+    const bySec = {};
+    results.forEach(r => {
+      const k = r.meta.label || '其他';
+      bySec[k] = bySec[k] || { got: 0, max: 0, n: 0 };
+      bySec[k].got += r.got; bySec[k].max += (r.meta.per || 0); bySec[k].n++;
     });
+    const secRows = Object.keys(bySec).map(k => {
+      const s = bySec[k];
+      const pct = s.max ? Math.round(s.got / s.max * 100) : 0;
+      return `<div class="paper-row"><span class="paper-name">${esc(k)}（${s.n} 题）</span>` +
+        `<span class="paper-n">${pct}%</span>` +
+        `<span class="paper-score">${s.got} / ${s.max}</span></div>`;
+    }).join('');
+    const subDetail = subs.length ? subs.map((r, i) => {
+      return `<div class="subj-item">
+        <div class="subj-head"><span>${esc(r.meta.label || '主观题')} ${i + 1}</span><span class="subj-score">${r.got} / ${r.meta.per || 0} 分</span></div>
+        <div class="subj-stem">${esc(r.q.stem || r.q.term || '')}</div>
+        <div class="subj-ans">${esc(r.answer || '（未作答）')}</div>
+        ${r.note ? `<div class="subj-note">${esc(r.note)}</div>` : ''}
+      </div>`;
+    }).join('') : '';
+    const wrongObj = objList.filter(r => !r.ok);
+    const wrongHtml = wrongObj.length
+      ? `<h3 style="font-size:15px;margin-top:20px">客观题错题（${wrongObj.length}）</h3>` +
+        wrongObj.map(r => `<div class="wrong-item"><div>${esc(r.q.stem || r.q.term || '')}</div>
+          <div class="a">${ansBanner(r.q, false)}</div>
+          ${r.q.explanation ? `<div class="muted" style="font-size:13px;margin-top:4px">解析：${esc(r.q.explanation)}</div>` : ''}</div>`).join('')
+      : '';
+    const pass = totalScore >= 60;
     view.innerHTML =
-      `<div class="result-score">${score}</div><div class="result-sub">得分 ${correct} / ${total} · 答题用时 ${fmtElapsed(usedMs)}</div>` +
+      `<div class="result-score">${totalScore}</div>
+      <div class="result-sub">总分 ${totalScore} / ${maxScore}　<span class="${pass ? 'pass-tag' : 'fail-tag'}">${pass ? '及格' : '未及格'}</span></div>
+      <div class="exam-split"><span>客观 ${objScore} / ${objMax}</span><span>主观 ${subScore} / ${subMax}</span><span>用时 ${fmtElapsed(usedMs)}</span></div>` +
       renderMockHistory() +
-      (noAns.length ? `<div class="muted" style="text-align:center;margin:10px 0;font-size:13px">⚠️ 有 ${noAns.length} 道题没识别到答案，已按答错计</div>` : '') +
-      (chapterHtml ? `<h3 style="font-size:15px">章节正确率</h3>${chapterHtml}` : '') +
-      (wrongList.length ? `<h3 style="font-size:15px;margin-top:18px">错题回顾（${wrongList.length}）</h3>${wrongHtml}` : '<div class="empty">满分，牛！</div>') +
+      `<div class="paper-table" style="margin-top:16px">${secRows}</div>` +
+      (subs.length && !hasAI ? `<div class="muted" style="font-size:12.5px;margin-top:10px">主观题未判分：需要先在设置里配置 AI Key。</div>` : '') +
+      wrongHtml +
+      (subDetail ? `<h3 style="font-size:15px;margin-top:20px">主观题判分明细</h3>${subDetail}` : '') +
       `<div style="height:10px"></div><button class="btn secondary" id="backBank2">返回题库</button>`;
     $('#backBank2').onclick = () => openBank(S.bank.id);
     SFX.done();                            // v22：交卷收尾音
 
-    // 结果已经渲染出来了再写库，存储失败不会挡住看成绩；失败只提示
-    // v33.2 F06：成绩+流水同事务（原先流水 fire-and-forget，可能一半有一半没有）
+    // 已判定的才写进度；没判分的题不能当成错题污染错题本
+    const updates = []; const sessList = [];
+    results.forEach(r => {
+      if (!r.objective && !r.graded) return;
+      updates.push({ qid: r.q.id, ok: !!r.ok });
+      sessList.push({ bankId: S.bank.id, qid: r.q.id, mode: 'exam', right: !!r.ok, ms: exam.msPer[r.q.id] || 0 });
+    });
     await safe(DB.bulkUpdateProgress(S.bank.id, updates, 'exam', sessList), '保存成绩失败');
     // v27：整卷模拟 +1（考试计划「冲刺」目标口径，v27 起累计）
     safe((async () => {
       await DB.setMeta('mockCount', ((await DB.getMeta('mockCount')) || 0) + 1);
       try {
         const hist = JSON.parse(localStorage.getItem('mock-history') || '[]');
-        hist.push({ date: Date.now(), score: score, correct: correct, total: total });
+        hist.push({ date: Date.now(), score: totalScore, correct: totalScore, total: maxScore });
         if (hist.length > 20) hist.shift();
         localStorage.setItem('mock-history', JSON.stringify(hist));
       } catch (e) {}
@@ -3568,6 +3970,7 @@
   // 原来的写法会直接白屏且无任何提示
   bind();
   initAi();
+  initAsr();
   safe(DB.open(), '数据库打开失败').then(async (ok) => {
     if (!ok) {
       const box = $('#bankList');
@@ -3582,5 +3985,7 @@
       }
     })(), '自动备份失败，请使用导出备份保留数据');
     await safe(renderHome(), '加载题库失败');
+    // v56：上次没交卷的模拟考——放在最后问，别挡住首页加载
+    await safe(offerExamResume(), '检查考试草稿失败');
   });
 })();

@@ -518,6 +518,16 @@ body {
 .ol-node:not(.collapsed) > .ol-row .ol-toggle { transform: rotate(90deg); }
 .ol-title { flex: 1; font-size: 15px; }
 .ol-count { font-size: 12px; color: var(--muted); flex: none; }
+/* v54：章节行内直接开练 */
+.ol-go {
+  flex: none; margin-left: 4px; padding: 3px 10px;
+  border: 1px solid var(--line-primary); border-radius: 999px;
+  background: var(--surface); color: var(--primary);
+  font: inherit; font-size: 12px; line-height: 1.4; cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
+}
+.ol-go:active { background: var(--primary-soft); }
+.ol-row.sel .ol-go { background: transparent; border-color: var(--on-primary); color: var(--on-primary); }
 .ol-children { border-top: none; }
 .ol-node.collapsed > .ol-children { display: none; }
 
@@ -1129,6 +1139,84 @@ body {
   border-radius: 10px; white-space: pre-wrap; overflow-wrap: anywhere; font-size: 14px;
 }
 
+/* ===== v55：语音输入 ===== */
+.voice-row {
+  display: flex; align-items: center; gap: 10px;
+  margin-top: 10px; flex-wrap: wrap;
+}
+.voice-btn {
+  flex: none; padding: 9px 16px; border-radius: 999px;
+  border: 1px solid var(--line-primary); background: var(--surface); color: var(--primary);
+  font: inherit; font-size: 14px; font-weight: 600; cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
+}
+.voice-btn:active { background: var(--primary-soft); }
+.voice-btn:disabled { opacity: .6; cursor: default; }
+.voice-btn.recording {
+  background: var(--bad); border-color: var(--bad); color: var(--bad-fg);
+  animation: voicePulse 1.1s ease-in-out infinite;
+}
+@keyframes voicePulse {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(168,58,51,.45); }
+  50% { box-shadow: 0 0 0 8px rgba(168,58,51,0); }
+}
+.voice-hint { flex: 1; min-width: 140px; font-size: 12px; color: var(--muted); line-height: 1.45; }
+
+/* v56：考试自动保存提示 */
+.exam-autosave {
+  margin-top: 12px; padding: 8px 11px; border-radius: 9px;
+  background: var(--ok-bg); color: var(--ok);
+  font-size: 12.5px; line-height: 1.5;
+}
+
+/* ===== v54：模拟考（真实卷面） ===== */
+.exam-essay {
+  width: 100%; min-height: 180px; margin-top: 4px; padding: 12px;
+  border: 1px solid var(--line); border-radius: 10px;
+  background: var(--surface); color: var(--text);
+  font: inherit; font-size: 15px; line-height: 1.7; resize: vertical;
+}
+.exam-essay:focus { outline: 2px solid var(--primary); outline-offset: -1px; }
+
+.paper-table { border: 1px solid var(--line); border-radius: 12px; overflow: hidden; background: var(--surface); }
+.paper-row {
+  display: flex; align-items: center; gap: 10px;
+  padding: 11px 13px; border-bottom: 1px solid var(--line); font-size: 14px;
+}
+.paper-row:last-child { border-bottom: none; }
+.paper-name { flex: 1; min-width: 0; }
+.paper-n { flex: none; font-size: 12.5px; color: var(--muted); font-variant-numeric: tabular-nums; }
+.paper-n.lack { color: var(--warn); font-weight: 600; }
+.paper-score { flex: none; min-width: 62px; text-align: right; font-variant-numeric: tabular-nums; font-weight: 600; }
+.paper-total { background: var(--primary-soft); font-weight: 700; }
+
+.exam-split {
+  display: flex; flex-wrap: wrap; gap: 6px 14px; justify-content: center;
+  margin-top: 10px; font-size: 13px; color: var(--muted);
+}
+.pass-tag { color: var(--ok); font-weight: 700; }
+.fail-tag { color: var(--bad); font-weight: 700; }
+
+.subj-item {
+  margin-top: 10px; padding: 12px; border: 1px solid var(--line);
+  border-radius: 12px; background: var(--surface);
+}
+.subj-head {
+  display: flex; justify-content: space-between; align-items: baseline;
+  font-size: 13px; font-weight: 700; color: var(--primary); margin-bottom: 6px;
+}
+.subj-score { font-variant-numeric: tabular-nums; color: var(--text); }
+.subj-stem { font-size: 14px; line-height: 1.55; margin-bottom: 8px; }
+.subj-ans {
+  padding: 9px 11px; border-radius: 9px; background: var(--bg);
+  font-size: 13px; line-height: 1.6; white-space: pre-wrap; overflow-wrap: anywhere;
+}
+.subj-note {
+  margin-top: 8px; padding: 8px 10px; border-radius: 9px;
+  background: var(--primary-soft); color: var(--text);
+  font-size: 12.5px; line-height: 1.55; white-space: pre-wrap;
+}
+
 /* ===== v52：回看态（只读回顾） ===== */
 .review-note {
   margin-top: 14px; padding: 9px 12px; border-radius: 10px;
@@ -1184,10 +1272,6 @@ body {
 .ai-more:active { color: var(--primary); }
 .ai-full { margin-top: 8px; padding-top: 9px; border-top: 1px dashed var(--line); }
 .ai-full-text { font-size: 13px; line-height: 1.62; color: var(--text); white-space: pre-wrap; overflow-wrap: anywhere; }
-
-/* 巧记：口诀放大，说明压成一行小字 */
-.ai-hook { font-size: 16.5px; font-weight: 700; letter-spacing: .3px; line-height: 1.5; color: var(--primary); overflow-wrap: anywhere; }
-.ai-map { margin-top: 6px; font-size: 12.5px; line-height: 1.55; color: var(--muted); }
 
 /* ===== v51：举一反三 · 同考点关联题 ===== */
 .rel-block {

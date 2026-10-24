@@ -8,7 +8,7 @@
  *   3. 离线回退 HTML 只用于导航请求；JS/CSS 等子资源离线时绝不能回退成 index.html
  *      （否则控制台一片 MIME 错误、页面假死）。
  */
-const CACHE = 'card-quiz-v53';   // 导入按 10 分钟窗口归组 + 强制新建开关
+const CACHE = 'card-quiz-v57';   // 模拟考真实卷面 + 考试草稿 + 语音输入 + AI 模型升级
                                  // 注意：本 SW 对同源资源是 cache-first，改了 styles.css/app.js
                                  // 必须同步改这里，否则老用户永远拿到旧样式。
 const PREFIX = 'card-quiz-';
@@ -17,7 +17,7 @@ const CORE = [
   './app.js', './db.js', './parser.js', './scoring.js', './slicer.js', './scheduler.js', './sfx.js', './bgm.js'
 ];
 const DECOR = ['./manifest.webmanifest', './icon.svg', './bg-light.webp', './bg-dark.webp'];
-const OPTIONAL = ['./ai.js'];
+const OPTIONAL = ['./ai.js', './asr.js'];
 const SHELL = CORE.concat(DECOR, OPTIONAL);
 
 self.addEventListener('install', (e) => {

@@ -6,7 +6,9 @@
   'use strict';
 
   const ENDPOINT = 'https://open.bigmodel.cn/api/paas/v4/chat/completions';
-  const DEFAULT_MODEL = 'glm-4-flash';
+  // v57：智谱现在的免费模型是 glm-4.7-flash（30B-A3B MoE，200K 上下文，输入输出全免费，
+  // 支持 JSON 模式）。原来写死的 glm-4-flash 是 2024 年的老轻量模型，同样免费但能力差一代。
+  const DEFAULT_MODEL = 'glm-4.7-flash';
   const TIMEOUT = 30000;
 
   function failure(message, code, status) {
@@ -274,37 +276,7 @@
     return { oneline: oneline, points: data.points.map(function (p) { return p.trim(); }), trap: (data.trap || '').trim() };
   }
 
-  // 题型 2：一句真能记住的口诀 + 逐字拆回答案
-  async function mnemonic(question, options) {
-    const dataText = buildPayload(question, null);
-    const result = await request([
-      { role: 'system', content: SYSTEM_BASE +
-        '你的任务是编记忆口诀，不是复述答案。' +
-        '只输出 JSON 对象，恰好两个字段：' +
-        'hook 口诀本体，不超过 24 字；map 把口诀逐字拆回答案，不超过 50 字。' +
-        'hook 必须真的用上一种手法：①首字提取——几个要点各取一个字串成顺口的话；' +
-        '②谐音——把专名换成读音相近的日常词；③押韵或对仗——字数对齐、尾字同韵；' +
-        '④画面——把抽象规则写成一个荒诞但具体的场景。' +
-        'map 要能一一对上，说清每个字/词对应答案的哪一部分。' +
-        '硬要求：' +
-        '一、hook 不能是答案的缩写、同义改写或口号。判断标准是——如果只看 hook 也能靠字面联想起答案，才算成功；' +
-        '如果 hook 换成「记住这个考点」意思也通，就是失败，必须重编。' +
-        '二、不能为了顺口改变结论、漏掉限定条件、编造不存在的规则或条号。' +
-        '三、答案本身只有一个短词、确实编不出钩子时，hook 写这个词的谐音或拆字，map 说明怎么记，不要硬凑一句话。' +
-        '反例（禁止这样）：hook「公海六大自由要记牢」+ map「公海自由包括航行、捕鱼等六项」——这是复述答案，没有任何钩子。' +
-        '正例：hook「航鱼缆飞研岛」+ map「六字依次对应航行、捕鱼、铺电缆、飞越、科研、建人工岛」。' +
-        '（上面正反例只示范手法，不要套用其内容。）' },
-      { role: 'user', content: dataText }
-    ], Object.assign({ maxTokens: 400 }, options));
-    let data;
-    try { data = JSON.parse(result.content); } catch (_) { /* 下方统一报告格式错误。 */ }
-    const hook = data && shortText(data.hook, 80);
-    const map = data && shortText(data.map, 140);
-    if (!hook || !map) throw failure('AI 巧记格式异常，请重试或查看题库原解析。', 'INVALID_RESPONSE');
-    return { hook: hook, map: map };
-  }
-
-  // 题型 3：用户主动点「展开完整解析」才请求，服务端限 400 字。
+  // 题型 2：用户主动点「展开完整解析」才请求，服务端限 400 字。
   async function explainFull(question, userAnswer, options) {
     const dataText = buildPayload(question, userAnswer);
     const result = await request([
@@ -326,5 +298,5 @@
   return { getKey: getKey, setKey: setKey, getModel: getModel, setModel: setModel,
     validateKey, validateProxy, getProxy, setProxy,
     hasKey: hasKey, testConnection: testConnection, grade: grade,
-    explain: explain, mnemonic: mnemonic, explainFull: explainFull };
+    explain: explain, explainFull: explainFull };
 });
