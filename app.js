@@ -1585,23 +1585,37 @@
       if (!window.AI) throw new Error('判题模块未加载');
       $('#aiKeyInput').value = AI.getKey();
       $('#aiModelInput').value = AI.getModel();
-      const sync = () => { status.textContent = AI.hasKey() ? '已配置：' + AI.getModel() : '未配置，仍可看答案自评'; };
+      $('#aiProxyInput').value = AI.getProxy();
+      $('#aiProxyConsent').checked = !!AI.getProxy();
+      $('#aiProxyInput').oninput = () => { $('#aiProxyConsent').checked = false; };
+      const sync = () => { status.textContent = AI.hasKey() ? '配置已保存，尚未验证连接：' + AI.getModel() + (AI.getProxy() ? ' · 自有代理 ' + new URL(AI.getProxy()).host : ' · 官方直连') : '未配置，仍可看答案自评'; };
       sync();
       aiReady = true;
       $('#aiSaveBtn').onclick = () => {
         try {
+          const proxy = AI.validateProxy($('#aiProxyInput').value);
+          AI.validateKey($('#aiKeyInput').value);
+          if (proxy && !$('#aiProxyConsent').checked) { status.textContent = '请先确认此代理由你管理或信任，再保存。'; return; }
           AI.setModel($('#aiModelInput').value);
           AI.setKey($('#aiKeyInput').value);
+          AI.setProxy(proxy);
           sync();
           toast(AI.hasKey() ? 'AI 配置已保存' : 'AI 已停用');
         } catch (e) { status.textContent = '保存失败：' + e.message; }
       };
       $('#aiTestBtn').onclick = async () => {
+        try {
+          const proxy = AI.validateProxy($('#aiProxyInput').value);
+          AI.validateKey($('#aiKeyInput').value);
+          if ($('#aiKeyInput').value.trim() !== AI.getKey() || ($('#aiModelInput').value.trim() || 'glm-4-flash') !== AI.getModel() || proxy !== AI.getProxy()) {
+            status.textContent = '输入框有未保存的修改，请先点“保存配置”再测试。'; return;
+          }
+        } catch (e) { status.textContent = e.message; return; }
         const button = $('#aiTestBtn');
         button.disabled = true;
         $('#aiSaveBtn').disabled = true;
-        status.textContent = '正在测试已保存的配置…';
-        try { await AI.testConnection(); status.textContent = '连接成功：' + AI.getModel(); }
+        status.textContent = '正在测试已保存的配置：' + (AI.getProxy() ? '自有代理' : '官方直连') + '…';
+        try { await AI.testConnection(); status.textContent = '连接成功：' + AI.getModel() + (AI.getProxy() ? ' · 自有代理' : ' · 官方直连'); }
         catch (e) { status.textContent = e.message; }
         finally { button.disabled = false; $('#aiSaveBtn').disabled = false; }
       };

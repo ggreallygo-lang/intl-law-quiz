@@ -1,4 +1,4 @@
-/* 可选 AI 判题：只直连用户配置的官方服务，不缓存答案或自动提交学习记录。 */
+/* 可选 AI：官方直连或用户明确配置的自有代理，不缓存答案或自动提交学习记录。 */
 (function (root, factory) {
   if (typeof module === 'object' && module.exports) module.exports = factory(typeof require === 'function' ? require('./scoring') : root.Scoring);
   else root.AI = factory(root.Scoring);
@@ -30,12 +30,15 @@
   }
 
   function getKey() { return readSetting('ai-key').trim(); }
-  function setKey(value) {
+  function validateKey(value) {
     if (typeof value !== 'string') throw failure('API Key 必须是文本。', 'INVALID_CONFIG');
     const key = value.trim();
-    if (key.length > 4096 || /[\r\n]/.test(key)) throw failure('API Key 格式不正确。', 'INVALID_CONFIG');
-    writeSetting('ai-key', key);
+    if (key.length > 4096 || key && !/^[\x21-\x7e]+$/.test(key)) {
+      throw failure('API Key 含空白、中文或全角字符，请重新复制完整 Key，不要附加 Bearer 或引号。', 'INVALID_CONFIG');
+    }
+    return key;
   }
+  function setKey(value) { writeSetting('ai-key', validateKey(value)); }
   function getModel() { return readSetting('ai-model').trim() || DEFAULT_MODEL; }
   function setModel(value) {
     if (typeof value !== 'string' || (value.trim() && !/^[A-Za-z0-9._-]{1,100}$/.test(value.trim()))) {
@@ -44,6 +47,22 @@
     writeSetting('ai-model', value.trim());
   }
   function hasKey() { return !!getKey(); }
+
+  function validateProxy(value) {
+    if (typeof value !== 'string') throw failure('代理地址必须是文本。', 'INVALID_CONFIG');
+    if (!value.trim()) return '';
+    let url;
+    try { url = new URL(value.trim()); }
+    catch (_) { throw failure('自有代理地址无效，请填写完整 HTTPS 地址。', 'INVALID_CONFIG'); }
+    if (url.protocol !== 'https:' || url.username || url.password || url.search || url.hash ||
+        /(^|\.)(corsproxy\.io|allorigins\.win|allorigins\.hexlet\.app|cors-anywhere\.herokuapp\.com|corsproxy\.org)$/i.test(url.hostname)) {
+      throw failure('请使用不含账号、查询参数的自有 HTTPS 代理地址，不支持公共代理。', 'INVALID_CONFIG');
+    }
+    return url.href;
+  }
+  // 与旧 ai-proxy/ai-mode 隔离，旧公共代理配置不能自动生效。
+  function getProxy() { return validateProxy(readSetting('ai-trusted-proxy')); }
+  function setProxy(value) { writeSetting('ai-trusted-proxy', validateProxy(value)); }
 
   function httpMessage(status) {
     if (status === 401) return 'AI 身份验证失败（401），请检查 API Key。';
@@ -54,9 +73,10 @@
   }
 
   async function request(messages, options) {
-    const key = getKey();
+    const key = validateKey(getKey());
     if (!key) throw failure('请先配置官方 API Key，或使用看答案自评。', 'NO_KEY');
     const model = getModel();
+    const proxy = getProxy();
     const externalSignal = options && options.signal;
     if (externalSignal && externalSignal.aborted) throw failure('AI 请求已取消。', 'ABORTED');
     const controller = new AbortController();
@@ -65,7 +85,7 @@
     if (externalSignal) externalSignal.addEventListener('abort', cancel, { once: true });
     const timer = setTimeout(function () { timedOut = true; controller.abort(); }, TIMEOUT);
     try {
-      const response = await fetch(ENDPOINT, {
+      const response = await fetch(proxy || ENDPOINT, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + key },
         redirect: 'error',
@@ -85,7 +105,7 @@
           // 服务端原始 message 可能回显敏感请求内容；只保留数字错误码。
           if (/^\d{1,12}$/.test(String(code))) serviceCode = String(code);
         } catch (_) { /* 非 JSON 错误页仍保留 HTTP 状态。 */ }
-        throw failure(httpMessage(response.status), serviceCode || 'HTTP_' + response.status, response.status);
+        throw failure(httpMessage(response.status) + (serviceCode ? ' 服务错误码：' + serviceCode + '。' : ''), serviceCode || 'HTTP_' + response.status, response.status);
       }
       let body;
       try { body = await response.json(); }
@@ -105,7 +125,8 @@
       if (timedOut) throw failure('AI 请求超过 30 秒，请重试或使用自评。', 'TIMEOUT');
       if (controller.signal.aborted) throw failure('AI 请求已取消。', 'ABORTED');
       if (error && error.name === 'AIError') throw error;
-      throw failure('无法连接 AI 服务；请检查网络。浏览器也可能因 CORS 策略阻止直连，应用不会转发到公共代理。', 'NETWORK_ERROR');
+      throw failure(proxy ? '无法连接已配置的自有代理（NETWORK_ERROR），未收到可读取的 HTTP 响应。请检查代理部署、手机网络及代理的跨域设置。' :
+        '官方直连失败（NETWORK_ERROR），未收到可读取的 HTTP 响应；可能是手机网络、浏览器限制或跨域拦截。可换网络重试，或配置你自己的可信代理。尚不能判断 Key 或模型是否有效。', 'NETWORK_ERROR');
     } finally {
       clearTimeout(timer);
       if (externalSignal) externalSignal.removeEventListener('abort', cancel);
@@ -239,5 +260,6 @@
   function mnemonic(question, options) { return studyText(question, null, options, 'mnemonic'); }
 
   return { getKey: getKey, setKey: setKey, getModel: getModel, setModel: setModel,
+    validateKey, validateProxy, getProxy, setProxy,
     hasKey: hasKey, testConnection: testConnection, grade: grade, explain: explain, mnemonic: mnemonic };
 });
