@@ -97,11 +97,13 @@
   let curView = null;
   function showView(name) {
     if (curView === 'study' && name !== 'study') cleanupStudy();
+    if (name !== 'study') $('#view-study').classList.remove('practice-view', 'has-save-error');
     curView = name;
     ['home', 'bank', 'study', 'wrong'].forEach(v => $('#view-' + v).classList.toggle('hidden', v !== name));
   }
   function cleanupStudy() {
     if (aiRequest) { aiRequest.abort(); aiRequest = null; }
+    if (aiHelpRequest) { aiHelpRequest.abort(); aiHelpRequest = null; }
     practiceRender++;
     stopTimer(exam); stopTimer(prac); stopTimer(mem);   // v21：三个模式的计时器统一停
     if (mem && mem.keyHandler) { document.removeEventListener('keydown', mem.keyHandler); mem.keyHandler = null; }   // v32 A6
@@ -869,15 +871,15 @@
     const items = await wrongItems();
     el.textContent = items.length;
     const hint = $('#wrongEntryHint');
-    if (hint) hint.textContent = items.length ? '' : '（还没有错题）';
+    if (hint) hint.textContent = items.length ? ' 题待重练' : '（没有待重练的错题）';
     return items.length;
   }
 
-  async function openWrongBook() {
+  async function openWrongBook(filters) {
     const progs = await DB.listProgress(S.bank.id);
     const qmap = {};
     S.questions.forEach(q => { qmap[q.id] = q; });
-    wb = { progs: progs, qmap: qmap, type: null, chapter: null, view: 'active' };   // v30：三视图 active/grad/dismissed
+    wb = { progs: progs, qmap: qmap, type: filters && filters.type || null, chapter: filters && filters.chapter || null, view: 'active' };
     setBack('bank', '‹ 题库');
     $('#title').textContent = '错题本';
     renderWrongBook();
@@ -966,10 +968,12 @@
       if (typePairs.length > 2) html += wbChips('type', typePairs, wb.type);
       if (chapPairs.length > 2) html += wbChips('chapter', chapPairs, wb.chapter);
       html += `<div class="wb-actions">` +
-        `<button class="btn" id="wbPractice"${items.length ? '' : ' disabled'}>✍️ 刷错题</button>` +
+        `<button class="btn" id="wbPractice"${items.length ? '' : ' disabled'}>开始重练（${items.length} 题）</button>` +
         `<button class="btn secondary" id="wbMemorize"${items.length ? '' : ' disabled'}>🃏 背错题</button>` +
         `<button class="btn secondary" id="wrongExport">📤 导出</button>` +
         `</div>`;
+      const order = localStorage.getItem('ord-wrong') || 'seq';
+      html += '<div class="seg" id="wrongOrderSeg"><button data-v="seq"' + (order === 'seq' ? ' class="on"' : '') + '>按错题优先级</button><button data-v="rand"' + (order === 'rand' ? ' class="on"' : '') + '>随机重练</button></div>';
     }
     // v30：历史记录行——错/对次数、连对进度、最近答错时间，一眼看清这道题的过往
     const histLine = (it) => {
@@ -1016,6 +1020,7 @@
       };
     });
     bindReveal(view);
+    view.querySelectorAll('#wrongOrderSeg button').forEach(b => { b.onclick = () => { localStorage.setItem('ord-wrong', b.dataset.v); renderWrongBook(); }; });
     view.querySelectorAll('.wb-remove').forEach(b => {
       const qid = b.closest('.wb-item').dataset.qid;
       b.onclick = () => (wb.view !== 'active')
@@ -1024,9 +1029,11 @@
     });
     if (wb.view === 'active' && items.length) {
       const list = items.map(it => it.question);
-      $('#wbPractice').onclick = () => startMode('practice', list, { title: '刷错题' });
+      $('#wbPractice').onclick = () => safe(startPractice({ list, title: '错题重练', order: localStorage.getItem('ord-wrong') || 'seq',
+        source: { kind: 'wrong', bankId: S.bank.id, type: wb.type, chapter: wb.chapter, scopeIds: list.map(q => q.id) } }), '开始重练失败');
       // 背错题不做 SM2 due 过滤：错题就是要全部过一遍
-      $('#wbMemorize').onclick = () => startMode('memorize', list, { title: '背错题', all: true });
+      $('#wbMemorize').onclick = () => startMode('memorize', list, { title: '背错题', all: true,
+        source: { kind: 'wrong', bankId: S.bank.id, type: wb.type, chapter: wb.chapter, scopeIds: list.map(q => q.id) } });
     }
   }
 
@@ -1193,6 +1200,9 @@
 
   async function startMemorize(opts) {
     opts = opts || {};
+    if (!await ensurePracticeSaved()) return;
+    cleanupStudy();
+    const startToken = practiceRender;
     stopTimer(mem);                        // v21：防上一轮的 interval 泄漏
     // v38 #3（外部审查）：跨库背题必须加载每题的真实进度——不能只加载 S.bank 或空数组，
     // 否则其他题库的题被当新卡，评分后以默认记录覆盖原有进度
@@ -1260,13 +1270,18 @@
                      tomorrow: rawReview.length + Math.min(rawFresh.length, limNew || rawFresh.length) };
       }
     }
-    mem = { list: list, i: 0, map, startAt: Date.now(), timer: null, title: title, maxSeen: 1, skippedN: 0, review: false, undoStack: [], donePage: donePage };
-    setBack(S.mixed ? 'mixed' : 'bank', S.mixed ? '‹ 首页' : '‹ 题库');   // v37.4：跨库走首页
+    if (startToken !== practiceRender) return;
+    mem = { list: list, i: 0, map, startAt: Date.now(), timer: null, title: title, maxSeen: 1, skippedN: 0, review: false, undoStack: [], donePage: donePage,
+      source: opts.source || null, bankId: S.bank && S.bank.id, mixed: !!S.mixed };
+    S.studySource = mem.source;
+    setBack(mem.source && mem.source.kind === 'wrong' ? 'wrong' : (S.mixed ? 'mixed' : 'bank'), mem.source && mem.source.kind === 'wrong' ? '‹ 错题本' : (S.mixed ? '‹ 首页' : '‹ 题库'));
     $('#title').textContent = title;
     renderMemorize();
   }
   function renderMemorize() {
+    if (aiHelpRequest) { aiHelpRequest.abort(); aiHelpRequest = null; }
     const view = $('#view-study'); showView('study');
+    view.classList.remove('practice-view', 'has-save-error');
     if (mem) mem.locked = false;          // v14：每题渲染时解锁，防止连点跳两题
     if (mem.keyHandler) { document.removeEventListener('keydown', mem.keyHandler); mem.keyHandler = null; }   // v32 A6：换卡/离开时摘掉快捷键
     if (mem.donePage) {                   // v32 A1：每日限额到顶——「今日完成」仪式页（Anki 式闭合感）
@@ -1289,7 +1304,8 @@
       SFX.done();                         // v22：背完收尾音
       view.innerHTML = `<div class="empty"><div style="font-size:40px">🎉</div>本轮背完啦！<br><span class="muted">按记忆曲线，该复习的都过了一遍 · 用时 ${used}` +
         (mem.skippedN ? ` · 跳过 ${mem.skippedN} 张（仍按原曲线安排）` : '') + `</span></div>
-        <button class="btn" onclick="location.reload()">返回</button>`;
+        <button class="btn" id="memDoneBack">${mem.source && mem.source.kind === 'wrong' ? '返回错题本' : '返回题库'}</button>`;
+      $('#memDoneBack').onclick = () => mem.source && mem.source.kind === 'wrong' ? openWrongBook(mem.source) : (S.mixed ? openHomeView() : openBank(S.bank.id));
       return;
     }
     const q = mem.list[mem.i];
@@ -1349,6 +1365,7 @@
       `</div>` +
       `<div class="flip-hint" id="flipHint">点击卡片或下方按钮翻面看答案</div>` +
       `<button class="btn" id="flipBtn" style="margin-top:14px">显示答案</button>` +
+      '<div id="memAiHelp" class="hidden">' + aiHelpHtml(q) + '</div>' +
       // v28：上一题（回看）/ 跳过（不评分、按原记忆曲线明天再来）
       `<div class="eq-row" style="margin-top:10px">` +
         `<button class="btn secondary" id="memPrev"${mem.i === 0 ? ' disabled' : ''}>‹ 上一题</button>` +
@@ -1378,6 +1395,7 @@
       card.onclick = null;                 // 翻过去之后再点卡片不再重复触发
       $('#flipBtn').classList.add('hidden');
       $('#flipHint').classList.add('hidden');
+      $('#memAiHelp').classList.remove('hidden');
       const ra = $('#rateArea');
       ra.classList.remove('hidden');
       ra.classList.add('fade-in');         // 自评按钮组淡入，避免"啪"地出现
@@ -1399,6 +1417,7 @@
       // 回看：直接翻到答案面、不出评分按钮（评分会重复写 SM-2，回看只看不改）
       flipped = true;
       $('#card').classList.add('flipped');
+      $('#memAiHelp').classList.remove('hidden');
       $('#flipBtn').classList.add('hidden');
       $('#flipHint').textContent = '📖 回看上一张 · 用下方按钮继续，回到最前一张后恢复评分';
       $('#flipHint').classList.remove('hidden');
@@ -1408,6 +1427,7 @@
       $('#card').onclick = flip;
     }
     startTimerChip(mem);
+    bindAiHelp(q, null);
     window.scrollTo({ top: 0 });   // v39.2           // v21：本轮用时 chip（回看也照常走会话计时）
     const rateCard = async (qv) => {
       if (mem.locked) return;              // v14：写库期间锁点击，防连点跳两题
@@ -1497,6 +1517,7 @@
     if (ub) ub.onclick = () => safe(doUndo(), '撤销失败');
     // v32 A6：键盘快捷键——空格/回车翻面；1/2/3 评分；Z 撤销（复习中有效）
     mem.keyHandler = (e) => {
+      if (e.target.closest('input, textarea, select, button')) return;
       if (mem.review) return;
       const k = e.key;
       if (!flipped && (k === ' ' || k === 'Enter')) { e.preventDefault(); flip(); }
@@ -1509,8 +1530,54 @@
   // ---------- 刷题模式 ----------
   let prac = null;
   let aiRequest = null;
+  let aiHelpRequest = null;
   let practiceRender = 0;
   let aiReady = false;
+
+  if (window.visualViewport) {
+    const syncPracticeViewport = () => {
+      const actions = $('#practiceActions');
+      if (actions) actions.style.setProperty('--practice-keyboard-offset', Math.max(0, window.innerHeight - visualViewport.height - visualViewport.offsetTop) + 'px');
+    };
+    visualViewport.addEventListener('resize', syncPracticeViewport);
+    visualViewport.addEventListener('scroll', syncPracticeViewport);
+  }
+
+  function aiHelpHtml(q) {
+    try {
+      if (!aiReady || !AI.hasKey() || !Scoring.hasAnswer(q)) return '';
+      return '<div class="ai-help"><div class="btn-row"><button class="btn secondary" data-ai-help="explain">AI 解析</button><button class="btn secondary" data-ai-help="mnemonic">记忆提示 / 巧记</button><button class="btn secondary hidden" data-ai-help="cancel">取消</button></div>' +
+        '<div class="muted" style="font-size:12px">点击才发送当前题目与作答，不发送整库；AI 内容供学习参考。</div><div class="ai-result hidden" data-ai-help-result role="status"></div></div>';
+    } catch (_) { return ''; }
+  }
+
+  function bindAiHelp(q, userAnswer) {
+    const box = $('#view-study .ai-help');
+    if (!box) return;
+    const result = box.querySelector('[data-ai-help-result]');
+    const buttons = box.querySelectorAll('[data-ai-help]:not([data-ai-help="cancel"])');
+    const cancel = box.querySelector('[data-ai-help="cancel"]');
+    cancel.onclick = () => { if (aiHelpRequest) aiHelpRequest.abort(); };
+    buttons.forEach(button => { button.onclick = async () => {
+      if (button.disabled) return;
+      if (aiHelpRequest) aiHelpRequest.abort();
+      const controller = new AbortController();
+      aiHelpRequest = controller;
+      buttons.forEach(b => { b.disabled = true; });
+      cancel.classList.remove('hidden');
+      result.classList.remove('hidden');
+      result.textContent = '正在请求，内容不会修改题库或学习记录…';
+      try {
+        const text = button.dataset.aiHelp === 'explain' ? await AI.explain(q, userAnswer, { signal: controller.signal }) : await AI.mnemonic(q, { signal: controller.signal });
+        if (!controller.signal.aborted && curView === 'study' && document.contains(box)) result.textContent = text;
+      } catch (e) {
+        if (curView === 'study' && document.contains(box)) result.textContent = e.code === 'ABORTED' ? '已取消，可稍后重新请求。' : e.message;
+      } finally {
+        if (aiHelpRequest === controller) aiHelpRequest = null;
+        if (document.contains(box)) { buttons.forEach(b => { b.disabled = false; }); cancel.classList.add('hidden'); }
+      }
+    }; });
+  }
 
   function initAi() {
     const status = $('#aiStatus');
@@ -1606,21 +1673,51 @@
     };
   }
 
+  async function ensurePracticeSaved() {
+    if (!prac) {
+      const resume = getResumeAny();
+      if (resume && (resume.results || []).some(r => r && r !== 'skip' && r.saved === false)) {
+        toast('上轮有未保存作答，请先继续上次并重试保存'); return false;
+      }
+    }
+    if (prac) {
+      await Promise.all(prac.results.filter(r => r && r !== 'skip' && r.savePromise).map(r => r.savePromise));
+      if (prac.results.some(r => r && r !== 'skip' && r.saved === false)) { toast('上轮有未保存作答，请先续刷并重试保存'); return false; }
+    }
+    return true;
+  }
+
   async function startPractice(opts) {
     opts = opts || {};
+    if (!await ensurePracticeSaved()) return;
+    cleanupStudy();
+    const startToken = practiceRender;
     stopTimer(prac);                        // v21：防上一轮的 interval 泄漏
-    // v30：随机（默认，老行为）/ 按原顺序 —— 用户点名要能选
-    const pool = (opts.order === 'seq') ? S.pool.slice() : shuffle(S.pool);
-    prac = { list: pool, i: 0, wrong: [], correct: 0, wrongIds: [], skipped: [], results: [], title: opts.title || '刷题', startAt: Date.now(), timer: null };
+    const unique = [...new Map((opts.list || S.pool).map(q => [q.id, q])).values()];
+    if (!unique.length) { toast('当前没有可练习的题目'); return; }
+    const order = opts.order || 'rand';
+    const pool = order === 'seq' ? unique : shuffle(unique);
+    const session = { list: pool, i: 0, wrong: [], correct: 0, wrongIds: [], skipped: [], results: [], title: opts.title || '刷题', startAt: Date.now(), timer: null,
+      source: opts.source || null, order, progressMap: {}, finished: false, bankId: S.bank && S.bank.id, mixed: !!S.mixed };
+    prac = session;
+    S.studySource = session.source;
+    const bankIds = [...new Set(pool.map(q => q.bankId))];
+    const progress = (await Promise.all(bankIds.map(id => DB.listProgress(id)))).flat();
+    if (prac !== session || startToken !== practiceRender) return;
+    progress.forEach(p => { session.progressMap[p.qid] = p; });
+    S.pool = pool.slice();
     // v31：跨库混合态没有具体题库，返回走首页（S.back 非.bank 即回首页分支）
-    setBack(S.mixed ? 'mixed' : 'bank', S.mixed ? '‹ 首页' : '‹ 题库');
+    setBack(session.source && session.source.kind === 'wrong' ? 'wrong' : (S.mixed ? 'mixed' : 'bank'), session.source && session.source.kind === 'wrong' ? '‹ 错题本' : (S.mixed ? '‹ 首页' : '‹ 题库'));
     $('#title').textContent = prac.title;
     renderPractice();
   }
   function renderPractice() {
     if (aiRequest) { aiRequest.abort(); aiRequest = null; }
+    if (aiHelpRequest) { aiHelpRequest.abort(); aiHelpRequest = null; }
     practiceRender++;
     const view = $('#view-study'); showView('study');
+    view.classList.add('practice-view');
+    view.classList.remove('has-save-error');
     if (prac) prac.locked = false;        // v14：每题渲染时解锁，防连点连跳
     if (prac.i >= prac.list.length) return renderPracticeResult();
     const q = prac.list[prac.i];
@@ -1629,22 +1726,26 @@
     saveResume('practice', prac);   // v23：每题存档，退出可续
     const rec = prac.results && prac.results[prac.i];   // v38 #4：提前声明（回看检查需要）
     let body = '';
-    // v38 #4：回看检查在所有题型分支之前——已答题只能看不能再做
-    if (rec && rec !== 'skip' && Scoring.isSelfAssess(q)) {
-      const label = q.type === 'fill' ? '填空题（答案较长，自评）' : TYPE_LABEL[q.type];
+    // 已答题统一只读回看，刷新续刷也不重复提交。
+    if (rec && rec !== 'skip') {
+      const label = TYPE_LABEL[q.type];
       const front = (q.type === 'term') ? q.term : q.stem;
       view.innerHTML =
         `<div class="tag" style="display:inline-block;font-size:12px;padding:3px 10px;border-radius:999px;background:var(--primary);color:#fff;margin-bottom:12px">${esc(label)}</div>
         <div class="q-stem">${esc(front)}</div>
         <div class="feedback ${rec.right ? 'ok' : 'bad'}" style="margin-top:14px;white-space:pre-wrap">${esc(Scoring.answerText(q))}</div>
-        <div class="muted" style="margin-top:8px;font-size:13px">${rec.right ? '✓ 当时答对' : '✗ 当时没答对'}（回看）</div>` +
+        <div class="muted" style="margin-top:8px;font-size:13px">${rec.right ? '✓ 当时答对' : '✗ 当时没答对'}（回看）· 你的回答：${esc([].concat(rec.picked || '').join('、'))}</div>` +
+        (q.explanation ? `<div class="feedback" style="white-space:pre-wrap">解析：${esc(q.explanation)}</div>` : '') +
+        '<div id="wrongStreakProgress" class="muted"></div>' + aiHelpHtml(q) +
         `<div class="btn-row" style="margin-top:14px">` +
-        `<button class="btn secondary" id="prevQBtn2" ${prac.i === 0 ? 'disabled' : ''}>‹ 上一题</button>` +
-        `<button class="btn" id="nextBtn">${prac.i + 1 >= total ? '查看结果 ›' : '下一题 ›'}</button></div>`;
+        `<button class="btn secondary" id="prevQBtn2" ${prac.i === 0 ? 'disabled' : ''}>‹ 上一题</button></div>` +
+        `<div id="practiceActions" class="practice-actions"><div id="practiceSaveStatus" role="status"></div><div id="nextWrap"><button class="btn" id="nextBtn">${prac.i + 1 >= total ? '查看结果 ›' : '下一题 ›'}</button></div></div>`;
       $('#nextBtn').onclick = () => { prac.locked = false; SFX.flip(); prac.i++; renderPractice(); };
       const pb2 = $('#prevQBtn2');
       if (pb2) pb2.onclick = () => { prac.locked = false; prac.i--; renderPractice(); };
       startTimerChip(prac);
+      bindAiHelp(q, rec.picked);
+      updatePracticeSaveStatus();
     window.scrollTo({ top: 0 });   // v39.2
       return;
     }
@@ -1691,7 +1792,8 @@
         `<button class="btn secondary" id="prevQBtn"${prac.i === 0 ? ' disabled' : ''}>‹ 上一题</button>` +
         `<button class="btn secondary" id="skipBtn">跳过 ›</button>` +
       `</div>` +
-      `<div id="nextWrap" class="hidden" style="margin-top:10px"><button class="btn" id="nextBtn" style="width:100%">下一题 ›</button></div>`;
+      `<div id="wrongStreakProgress" class="muted"></div>` +
+      `<div id="practiceActions" class="practice-actions hidden"><div id="practiceSaveStatus" role="status"></div><div id="nextWrap" class="hidden"><button class="btn" id="nextBtn" style="width:100%">下一题 ›</button></div></div>`;
     startTimerChip(prac);           // v21：本轮用时 chip
     $('#prevQBtn').onclick = () => {
       if (prac.locked || prac.i === 0) return;
@@ -1708,6 +1810,7 @@
     };
 
     bindAiGrade(q);
+    updatePracticeSaveStatus();
 
     // 自评题（名词解释 / 简答 / 长答案填空）
     if (Scoring.isSelfAssess(q)) {
@@ -1716,21 +1819,6 @@
         $('#tRight').onclick = () => finishPractice(q, true, ($('#aiAnswerInput') || {}).value || '自评');
         $('#tWrong').onclick = () => finishPractice(q, false, ($('#aiAnswerInput') || {}).value || '自评');
       };
-      return;
-    }
-    // v39 P2-1：填空题回看——已答题只能看不能再做
-    if (rec && rec !== 'skip' && q.type === 'fill' && !Scoring.isSelfAssess(q)) {
-      view.innerHTML =
-        `<div class="q-stem"><span class="qnum">填空题 ${prac.i + 1}/${total}（回看）</span>${esc(q.stem)}</div>
-        <input type="text" class="fill-input" value="${esc(rec.picked || '')}" disabled />
-        <div class="feedback ${rec.right ? 'ok' : 'bad'}" style="margin-top:12px">正确答案：${esc(Scoring.answerText(q))}</div>` +
-        `<div class="btn-row" style="margin-top:14px">` +
-        `<button class="btn secondary" id="prevQBtn2" ${prac.i === 0 ? 'disabled' : ''}>‹ 上一题</button>` +
-        `<button class="btn" id="nextBtn">${prac.i + 1 >= total ? '查看结果 ›' : '下一题 ›'}</button></div>`;
-      $('#nextBtn').onclick = () => { prac.locked = false; SFX.flip(); prac.i++; renderPractice(); };
-      const pb2 = $('#prevQBtn2');
-      if (pb2) pb2.onclick = () => { prac.locked = false; prac.i--; renderPractice(); };
-      startTimerChip(prac);
       return;
     }
     // 填空题：输入作答
@@ -1761,6 +1849,7 @@
           const k = op.dataset.k;
           if (picked.has(k)) { picked.delete(k); op.classList.remove('chosen'); }
           else { picked.add(k); op.classList.add('chosen'); }
+          updateLabel();
         };
       });
       const confirmBtn = document.createElement('button');
@@ -1769,13 +1858,15 @@
       confirmBtn.textContent = '确认答案（已选 ' + picked.size + ' 个）';
       confirmBtn.style.cssText = 'margin-top:14px;width:100%';
       const updateLabel = () => { confirmBtn.textContent = '确认答案（已选 ' + picked.size + ' 个）'; };
-      view.addEventListener('click', (e) => { if (e.target.closest('.option')) updateLabel(); });
-      view.appendChild(confirmBtn);
+      $('#practiceActions').appendChild(confirmBtn);
+      $('#practiceActions').classList.remove('hidden');
       confirmBtn.onclick = () => {
+        if (confirmBtn.disabled || prac.results[prac.i] && prac.results[prac.i] !== 'skip') return;
         if (!picked.size) { toast('至少选一个选项'); return; }
         const keys = Array.from(picked);
         opts.forEach(o => o.classList.add('locked'));
         confirmBtn.disabled = true;
+        confirmBtn.remove();
         const right = Scoring.isRight(q, keys);
         const correctKeys = Scoring.answerKeys(q);
         opts.forEach(o => {
@@ -1810,46 +1901,6 @@
       });
     }
 
-    // v28：回看模式 —— 这一题已做过（results[i] 是作答记录）：锁选项、复放反馈，不重复计分
-    if (rec && rec !== 'skip') {
-      const rOpts = view.querySelectorAll('.option');
-      rOpts.forEach(o => o.classList.add('locked'));
-      if (q.type === 'judge') {
-        const want = q.answer ? '1' : '0';
-        rOpts.forEach(o => {
-          if (o.dataset.v === want) o.classList.add('correct');
-          if (String(rec.picked) === o.dataset.v) { o.classList.add('chosen'); if (!rec.right) o.classList.add('wrong'); }
-        });
-      } else if (q.type === 'single' || q.type === 'multiple') {
-        const keys = Scoring.answerKeys(q);
-        rOpts.forEach(o => {
-          if (keys.indexOf(String(o.dataset.k).toUpperCase()) >= 0) o.classList.add('correct');
-          if ([].concat(rec.picked).map(String).indexOf(o.dataset.k) >= 0) { o.classList.add('chosen'); if (!rec.right) o.classList.add('wrong'); }
-        });
-      } else if (q.type === 'fill') {
-        const inp = $('#fillInput');
-        if (inp) { inp.value = rec.picked || ''; inp.disabled = true; }
-        const fb = $('#fillSubmit'); if (fb) fb.disabled = true;
-      } else if (Scoring.isSelfAssess(q)) {
-        // 自评题：自动展开答案，撤掉评分按钮（只看不改）
-        if ($('#revealTerm')) $('#revealTerm').click();
-        const tr = $('#tRight'), tw = $('#tWrong');
-        if (tr) tr.outerHTML = `<span class="muted" style="font-size:13px">${rec.right ? '✓ 当时答对' : '✗ 当时没答对'}</span>`;
-        if (tw) tw.outerHTML = '';
-      }
-      $('#pracFeedback').innerHTML = rec.right
-        ? `<div class="feedback ok">✓ 答对（回看）${q.explanation ? `<span class="sub">解析：${esc(q.explanation)}</span>` : ''}</div>`
-        : `<div class="feedback bad">✗ 答错（回看），正确答案：${esc(Scoring.answerText(q))}${q.explanation ? `<span class="sub">解析：${esc(q.explanation)}</span>` : ''}</div>`;
-      $('#nextWrap').classList.remove('hidden');
-      $('#skipBtn').classList.add('hidden');
-      $('#nextBtn').textContent = prac.i + 1 >= total ? '查看结果 ›' : '下一题 ›';
-      $('#nextBtn').onclick = () => {
-        if (prac.locked) return;
-        prac.locked = true;
-        SFX.flip();
-        prac.i++; renderPractice();
-      };
-    }
   }
   // v36：大号答案横幅（多选一眼看清）——正确键做成徽章块 + 选项原文小字
   function ansBanner(q, right) {
@@ -1877,6 +1928,12 @@
     if (aiInput) aiInput.disabled = true;
     const aiCancel = $('#aiCancelBtn');
     if (aiCancel) aiCancel.classList.add('hidden');
+    ['#multiConfirm', '#fillSubmit', '#revealTerm', '#tRight', '#tWrong', '#aiGradeBtn'].forEach(sel => { const el = $(sel); if (el) el.remove(); });
+    const fillInput = $('#fillInput');
+    if (fillInput) { fillInput.disabled = true; fillInput.blur(); }
+    if (aiInput) aiInput.blur();
+    const aiResult = $('#aiGradeResult');
+    if (aiResult) aiResult.querySelectorAll('.btn-row').forEach(row => { row.remove(); });
     if (right) SFX.right(); else SFX.wrong();   // v22：判分音效（选项/填空/自评三条路都汇到这里）
     const fb = $('#pracFeedback');
     // v36：客观题先给大号答案横幅（判断/选择/填空；自评题不需要）
@@ -1887,23 +1944,22 @@
     if (!Scoring.hasAnswer(q)) {
       html += `<div class="muted" style="margin-top:6px;font-size:13px">⚠️ 这道题没识别到答案，已按「答错」计，建议导出后手工补上</div>`;
     }
-    fb.innerHTML = html;
+    fb.innerHTML = html + aiHelpHtml(q);
+    bindAiHelp(q, picked);
     if (right) prac.correct++; else prac.wrongIds.push(q.id);
     // v28：记作答记录（回看用）；回看补答跳过的题要把它从跳过清单里捞回来
     const wasSkip = prac.results[prac.i] === 'skip';
-    prac.results[prac.i] = { right: right, picked: picked };
+    const session = prac, index = prac.i;
+    session.results[index] = { right, picked, saved: false,
+      session: { id: DB.uid(), bankId: q.bankId || S.bank.id, qid: q.id, mode: 'practice', right,
+        ms: Date.now() - (prac.renderedAt || Date.now()), ts: Date.now() } };
     if (wasSkip) prac.skipped = prac.skipped.filter(id => id !== q.id);
     // v33.2 F06：进度+流水一个事务（原先分两次写、流水还是 fire-and-forget，
     // 中途退出会产生「有流水没进度」的两套事实）
-    const sessP = { id: DB.uid(), bankId: (S.mixed && q.bankId) ? q.bankId : S.bank.id, qid: q.id,
-      mode: 'practice', right: right, ms: Date.now() - (prac.renderedAt || Date.now()), ts: Date.now() };
-
     saveResume('practice', prac);  // v38 #5：提交后立即更新快照
     // 先让用户可以继续，再写库 —— 存储失败绝不能把人卡死在这一题
     $('#nextWrap').classList.remove('hidden');
-    // v39.3：答完自动滚到「下一题」按钮可见位置（不用手动下滑找按钮）
-    const nwEl = $('#nextWrap');
-    if (nwEl) nwEl.scrollIntoView({ behavior: 'smooth', block: 'end' });
+    $('#practiceActions').classList.remove('hidden');
     $('#skipBtn').classList.add('hidden');
     $('#nextBtn').textContent = prac.i + 1 >= prac.list.length ? '查看结果 ›' : '下一题 ›';
     // v14：锁一下，避免连点"下一题"跳掉两题
@@ -1914,20 +1970,44 @@
       prac.i++; renderPractice();
     };
 
-    let pendingProgress = null;
-    let saving = false;
-    const retry = document.createElement('button');
-    retry.className = 'btn secondary';
-    retry.textContent = '作答未保存，重试保存';
-    const saveResult = async () => {
-      if (saving) return;
-      saving = true;
-      retry.disabled = true;
+    await persistPracticeAnswer(session, index);
+  }
+
+  function updatePracticeSaveStatus() {
+    if (!prac || curView !== 'study' || prac.i >= prac.list.length) return;
+    const status = $('#practiceSaveStatus');
+    if (!status) return;
+    const record = prac.results[prac.i];
+    const failed = record && record !== 'skip' && record.saved === false && !record.saving;
+    const oldRetry = $('#practiceSaveRetry');
+    if (oldRetry) oldRetry.remove();
+    $('#view-study').classList.toggle('has-save-error', !!failed);
+    status.textContent = record && record !== 'skip' && record.saved === false ? (record.saving ? '正在保存本次作答…' : '本次作答尚未保存') : '';
+    if (failed) {
+      const retry = document.createElement('button');
+      retry.id = 'practiceSaveRetry'; retry.className = 'btn secondary'; retry.textContent = '作答未保存，重试保存';
+      const session = prac, index = prac.i;
+      retry.onclick = () => persistPracticeAnswer(session, index);
+      $('#practiceActions').prepend(retry);
+    }
+    const streak = $('#wrongStreakProgress');
+    const p = prac.progressMap[prac.list[prac.i].id];
+    if (streak) streak.textContent = DB.wrongCount(p) > 0 || prac.source && prac.source.kind === 'wrong'
+      ? '已连续答对 ' + (p && p.wrongStreak || 0) + ' / ' + DB.wrongGradN() + ' 次' + (record && record.saved === false ? '（本次尚未保存）' : '') : '';
+  }
+
+  async function persistPracticeAnswer(session, index) {
+    const record = session.results[index], q = session.list[index];
+    if (!record || record === 'skip' || record.saved !== false) return;
+    if (record.saving) return record.savePromise;
+    record.saving = true;
+    record.savePromise = (async () => {
       try {
-        if (!pendingProgress) {
-          let p = await DB.getProgress(q.id) || { qid: q.id, bankId: sessP.bankId, ease: 2.5, interval: 0, reps: 0, due: 0, lapses: 0 };
+        if (!record.progress) {
+          let p = await DB.getProgress(q.id) || { qid: q.id, bankId: record.session.bankId, ease: 2.5, interval: 0, reps: 0, due: 0, lapses: 0 };
+          record.beforeStreak = p.wrongStreak || 0;
           p.practice = p.practice || { correct: 0, wrong: 0 };
-          if (right) {
+          if (record.right) {
             p.practice.correct++;
             p.wrongStreak = (p.wrongStreak || 0) + 1;   // v24：连续答对，攒够毕业
           }
@@ -1939,7 +2019,7 @@
             p.wrongDismissed = false;       // 曾被移除的再答错要收回来
           }
           // v32 A3：客观题答对进入低频抽查；自评或答错立即可复习。
-          if (right && !Scoring.isSelfAssess(q)) {
+          if (record.right && !Scoring.isSelfAssess(q)) {
             if (!p.inSrs) {
               p.enrollment = 'sampling';
               p.sampleStep = 0;
@@ -1949,20 +2029,29 @@
             p.inSrs = true;
             p.due = Date.now();
           }
-          pendingProgress = p;
+          record.progress = p;
+          if (prac === session) saveResume('practice', session);
         }
-        // 重试复用同一份进度和流水 ID，不能把一次作答再累计一次。
-        await DB.commitStudy([pendingProgress], [sessP]);
-        retry.remove();
+        await DB.commitStudy([record.progress], [record.session]);
+        record.saved = true;
+        session.progressMap[q.id] = await DB.getProgress(q.id);
       } catch (e) {
         reportErr('保存失败，请重试保存或导出备份', e);
-        if (document.contains(fb) && !document.contains(retry)) fb.appendChild(retry);
-      } finally { saving = false; retry.disabled = false; }
-    };
-    retry.onclick = saveResult;
-    await saveResult();
+      } finally {
+        record.saving = false;
+        if (prac === session && !session.finished) saveResume('practice', session);
+        if (prac === session) updatePracticeSaveStatus();
+      }
+    })();
+    if (prac === session) updatePracticeSaveStatus();
+    return record.savePromise;
   }
-  function renderPracticeResult() {
+  async function renderPracticeResult() {
+    const session = prac;
+    const token = practiceRender;
+    session.resultPage = true;
+    await Promise.all(session.results.filter(r => r && r !== 'skip' && r.savePromise).map(r => r.savePromise));
+    if (prac !== session || curView !== 'study' || token !== practiceRender) return;
     const total = prac.list.length;
     const skippedN = (prac.skipped || []).length;
     const answered = prac.correct + prac.wrongIds.length;   // v28：跳过的不进正确率分母
@@ -1972,44 +2061,61 @@
     const used = fmtElapsed(usedMs);
     const avg = answered ? Math.max(1, Math.round(usedMs / 1000 / answered)) : 0;
     stopTimer(prac);
-    clearResume();                         // v23：做完（含复习错题收尾）就清档
+    const unsaved = session.results.filter(r => r && r !== 'skip' && r.saved === false).length;
+    session.finished = unsaved === 0;
+    if (!unsaved) clearResume();
+    else saveResume('practice', session);
+    const progs = (await Promise.all([...new Set(session.list.map(q => q.bankId))].map(id => DB.listProgress(id)))).flat();
+    if (prac !== session || curView !== 'study' || token !== practiceRender) return;
+    const progressMap = new Map(progs.map(p => [p.qid, p]));
+    const graduated = session.results.filter((r, i) => r && r !== 'skip' && r.saved && r.beforeStreak < DB.wrongGradN() &&
+      DB.wrongCount(progressMap.get(session.list[i].id)) > 0 && (progressMap.get(session.list[i].id).wrongStreak || 0) >= DB.wrongGradN() && !progressMap.get(session.list[i].id).wrongDismissed).length;
+    const scopeIds = new Set(session.source && session.source.scopeIds || session.list.map(q => q.id));
+    const candidates = S.mixed ? session.list : S.questions;
+    const questionMap = Object.fromEntries(candidates.filter(q => scopeIds.has(q.id)).map(q => [q.id, q]));
+    const otherActions = new Set(session.wrongIds.concat(session.skipped));
+    const remaining = DB.pickWrong(progs, { questionMap }).filter(it => !otherActions.has(it.qid)).map(it => it.question);
     SFX.done();                            // v22：刷完收尾音
     const view = $('#view-study');
+    view.classList.remove('practice-view', 'has-save-error');
     view.innerHTML =
-      `<div class="result-score">${acc}%</div><div class="result-sub">答对 ${prac.correct} / 已答 ${answered}` +
-      (skippedN ? `（<b style="color:#c0392b">跳过 ${skippedN}</b>）` : '') + ` · 用时 ${used} · 平均 ${avg} 秒/题</div>` +
+      `<div class="result-score">${acc}%</div><div class="result-sub">本轮答对 ${prac.correct} · 答错 ${prac.wrongIds.length} · 跳过 ${skippedN}` +
+      ` · 新毕业 ${graduated} 题 · 用时 ${used} · 平均 ${avg} 秒/题</div>` +
+      (unsaved ? `<div class="feedback bad">有 ${unsaved} 条作答未保存，毕业数仅统计已保存记录。<button class="btn secondary" id="retryPracticeAll">重试保存本轮作答</button></div>` : '') +
       (skippedN
-        ? `<button class="btn" id="redoSkipped">⏭ 补做跳过的题（${skippedN}）</button><div style="height:10px"></div>`
+        ? `<button class="btn" id="redoSkipped"${unsaved ? ' disabled' : ''}>⏭ 补做跳过（${skippedN} 题）</button><div style="height:10px"></div>`
         : '') +
       (prac.wrongIds.length
-        ? `<button class="btn" id="reviewWrong">🔁 复习错题（${prac.wrongIds.length}）</button>
+        ? `<button class="btn" id="reviewWrong"${unsaved ? ' disabled' : ''}>🔁 再练本轮答错（${prac.wrongIds.length} 题）</button>
            <div style="height:10px"></div>`
         : `<div class="empty">${answered ? '全部答对，稳！' : '全部跳过了…再来一遍？'}</div>`) +
-      `<button class="btn" id="memThis">🃏 背这批题</button><div style="height:10px"></div>
-       <button class="btn secondary" id="redoPrac">再做一遍</button><div style="height:10px"></div>
-       <button class="btn ghost" id="backBank">返回题库</button>`;
+      (session.source && session.source.kind === 'wrong' ? `<button class="btn" id="continueWrong"${remaining.length && !unsaved ? '' : ' disabled'}>继续未掌握（${remaining.length} 题）</button><div style="height:10px"></div>` : '') +
+      `<button class="btn secondary" id="memThis"${unsaved ? ' disabled' : ''}>🃏 背这批题</button><div style="height:10px"></div>
+       <button class="btn secondary" id="redoPrac"${unsaved ? ' disabled' : ''}>再做一遍（${session.list.length} 题）</button><div style="height:10px"></div>
+       <button class="btn ghost" id="backBank">${session.source && session.source.kind === 'wrong' ? '返回错题本' : '返回题库'}</button>`;
+    if (unsaved) $('#retryPracticeAll').onclick = async () => {
+      $('#retryPracticeAll').disabled = true;
+      await Promise.all(session.results.map((r, i) => r && r !== 'skip' && r.saved === false ? persistPracticeAnswer(session, i) : Promise.resolve()));
+      if (prac === session && curView === 'study') renderPracticeResult();
+    };
     if (skippedN) $('#redoSkipped').onclick = () => {
-      const map = {}; prac.list.forEach(q => map[q.id] = q);   // v37.3：用本轮实际题目建索引（跨库模式 S.questions 是旧库的）
-      const title = prac.title;
-      stopTimer(prac);
-      prac = { list: shuffle((prac.skipped || []).map(id => map[id]).filter(Boolean)), i: 0, wrong: [], correct: 0, wrongIds: [], skipped: [], results: [], title: title, startAt: Date.now(), timer: null };
-      renderPractice();
+      startPractice({ list: session.list.filter(q => session.skipped.includes(q.id)), title: '补做跳过', order: session.order, source: session.source });
     };
     if (prac.wrongIds.length) $('#reviewWrong').onclick = async () => {
-      const map = {}; prac.list.forEach(q => map[q.id] = q);   // v37.3：用本轮实际题目建索引（跨库模式 S.questions 是旧库的）
-      const title = prac.title;
-      stopTimer(prac);
-      prac = { list: shuffle(prac.wrongIds.map(id => map[id]).filter(Boolean)), i: 0, wrong: [], correct: 0, wrongIds: [], skipped: [], results: [], title: title, startAt: Date.now(), timer: null };
-      renderPractice();
+      startPractice({ list: session.list.filter(q => session.wrongIds.includes(q.id)), title: '再练本轮答错', order: session.order, source: session.source });
     };
-    $('#redoPrac').onclick = () => startPractice({ title: prac.title });
-    $('#memThis').onclick = () => startMode('memorize', prac.list.slice(), { title: '背这批题', all: true });   // v37
-    $('#backBank').onclick = () => { if (S.mixed) { S.mixed = false; openHomeView(); } else openBank(S.bank.id); };
+    if ($('#continueWrong')) $('#continueWrong').onclick = () => startPractice({ list: remaining, title: '继续未掌握', order: session.order, source: session.source });
+    $('#redoPrac').onclick = () => startPractice({ list: session.list.slice(), title: session.title, order: session.order, source: session.source });
+    $('#memThis').onclick = () => startMode('memorize', prac.list.slice(), { title: '背这批题', all: true, source: session.source });
+    $('#backBank').onclick = () => { if (session.source && session.source.kind === 'wrong') openWrongBook(session.source); else if (S.mixed) { S.mixed = false; openHomeView(); } else openBank(S.bank.id); };
   }
 
   // ---------- 考试模式 ----------
   let exam = null;
   async function startExamSetup() {
+    if (!await ensurePracticeSaved()) return;
+    cleanupStudy();
+    $('#view-study').classList.remove('practice-view', 'has-save-error');
     setBack('bank', '‹ 题库');
     $('#title').textContent = '考试设置';
     // 可自动判分的题：客观题 + 填空。
@@ -2316,7 +2422,8 @@
   // ---------- 模式入口 ----------
   // opts：{ title, all } —— 错题本用 title 改标题、用 all 让背题跳过记忆曲线过滤
   function startMode(mode, list, opts) {
-    S.pool = (list && list.length) ? list : S.questions.slice();
+    if (Array.isArray(list) && !list.length) { toast('当前没有可练习的题目'); return; }
+    S.pool = list || S.questions.slice();
     if (mode === 'memorize') startMemorize(opts);
     else if (mode === 'practice') startPractice(opts);
     else if (mode === 'exam') startExamSetup();
@@ -2567,17 +2674,25 @@
       const data = {
         kind: kind, title: holder.title || '',
         i: holder.i, correct: holder.correct || 0, wrongIds: holder.wrongIds || [],
-        results: (kind === 'practice' && holder.results) ? holder.results : undefined,
+        results: (kind === 'practice' && holder.results) ? holder.results.map(r => {
+          if (!r || r === 'skip') return r;
+          const { saving, savePromise, ...record } = r;
+          return record;
+        }) : undefined,
         skipped: (kind === 'practice' && holder.skipped) ? holder.skipped : undefined,
+        source: holder.source || null, order: holder.order || null,
+        atResult: kind === 'practice' && holder.i >= holder.list.length,
         savedAt: Date.now()
       };
-      if (S.mixed) {
+      data.i = Math.min(data.i, holder.list.length - 1);
+      const mixed = !!holder.mixed;
+      if (mixed) {
         data.mixed = true;
         data.refs = holder.list.map(q => ({ b: q.bankId, q: q.id }));   // v38.1 P2：轻量引用
-        if (data.i >= holder.list.length) return;
       } else {
-        if (!S.bank || !S.bank.id) return;
-        data.bankId = S.bank.id;
+        const bankId = holder.bankId;
+        if (!bankId) return;
+        data.bankId = bankId;
         data.qids = holder.list.map(q => q.id);   // v39 P2-3：保存原始 ID 序列供恢复映射
       }
       localStorage.setItem(RESUME_KEY, JSON.stringify(data));
@@ -2700,9 +2815,12 @@
           progs = S.bank ? await DB.listProgress(S.bank.id) : [];
         }
         const map = {}; progs.forEach(p => map[p.qid] = p);
-        mem = { list: list, i: Math.min(r.i, list.length - 1), map, startAt: Date.now(), timer: null, title: r.title || '背题', maxSeen: Math.min(r.i, list.length - 1) + 1, skippedN: 0, review: false };
+        cleanupStudy();
+        mem = { list: list, i: Math.min(r.i, list.length - 1), map, startAt: Date.now(), timer: null, title: r.title || '背题', maxSeen: Math.min(r.i, list.length - 1) + 1, skippedN: 0, review: false,
+          source: r.source || null, bankId: r.bankId, mixed: !!r.mixed };
+        S.studySource = mem.source;
         S.pool = list;
-        setBack(S.mixed ? 'mixed' : 'bank', S.mixed ? '‹ 首页' : '‹ 题库');   // v38.1 P2
+        setBack(mem.source && mem.source.kind === 'wrong' ? 'wrong' : (S.mixed ? 'mixed' : 'bank'), mem.source && mem.source.kind === 'wrong' ? '‹ 错题本' : (S.mixed ? '‹ 首页' : '‹ 题库'));
         $('#title').textContent = mem.title;
         renderMemorize();
       })();
@@ -2710,27 +2828,28 @@
       stopTimer(prac);
       // v39 P2-3：按题目 ID 映射结果——不能截取数组（删题后旧答案会套到另一题上）
       const oldResults = r.results || [];
-      const mappedResults = list.map((q, idx) => {
-        if (idx === r.i) return undefined;   // 当前题不预填（可能是未完成状态）
-        // 按位置和 ID 双重匹配
-        if (oldResults[idx] && oldResults[idx] !== 'skip' && r.qids && r.qids[idx] === q.id) return oldResults[idx];
-        // 如果位置变了，尝试按 ID 查找
-        if (r.qids) {
-          const origIdx = r.qids.indexOf(q.id);
-          if (origIdx >= 0 && oldResults[origIdx] && oldResults[origIdx] !== 'skip') return oldResults[origIdx];
-        }
-        return undefined;
+      const oldIds = r.qids || (r.refs ? r.refs.map(ref => ref.q) : (r.questions || []).map(q => q.id));
+      const mappedResults = list.map(q => {
+        const originalIndex = oldIds.indexOf(q.id);
+        const record = originalIndex >= 0 ? oldResults[originalIndex] : undefined;
+        return record && record !== 'skip' ? Object.assign({ saved: true }, record) : record;
       });
-      const correct = mappedResults.filter(x => x && x.right).length;
-      prac = { list: list, i: Math.min(r.i, list.length - 1), wrong: [], correct: correct,
-               wrongIds: (r.wrongIds || []).filter(id => list.some(q => q.id === id)),
-               skipped: (r.skipped || []).filter(id => list.some(q => q.id === id)),
+      const correct = mappedResults.filter(x => x && x !== 'skip' && x.right).length;
+      const currentIndex = list.findIndex(q => q.id === oldIds[r.i]);
+      const bankIds = [...new Set(list.map(q => q.bankId))];
+      const progress = (await Promise.all(bankIds.map(id => DB.listProgress(id)))).flat();
+      prac = { list: list, i: r.atResult ? list.length : Math.max(0, currentIndex), wrong: [], correct: correct,
+               wrongIds: list.filter((q, i) => mappedResults[i] && mappedResults[i] !== 'skip' && !mappedResults[i].right).map(q => q.id),
+               skipped: list.filter((q, i) => mappedResults[i] === 'skip' || !mappedResults[i] && (r.skipped || []).includes(q.id)).map(q => q.id),
                results: mappedResults,
-               title: r.title || '刷题', startAt: Date.now(), timer: null };
+               title: r.title || '刷题', startAt: Date.now(), timer: null, source: r.source || null, order: r.order || 'rand',
+               progressMap: Object.fromEntries(progress.map(p => [p.qid, p])), finished: false, bankId: r.bankId, mixed: !!r.mixed };
+      S.studySource = prac.source;
       S.pool = list;
       // v37.3：跨库恢复走首页返回路径（S.bank 可能为 null）
-      setBack(S.mixed ? 'mixed' : 'bank', S.mixed ? '‹ 首页' : '‹ 题库');
+      setBack(prac.source && prac.source.kind === 'wrong' ? 'wrong' : (S.mixed ? 'mixed' : 'bank'), prac.source && prac.source.kind === 'wrong' ? '‹ 错题本' : (S.mixed ? '‹ 首页' : '‹ 题库'));
       $('#title').textContent = prac.title;
+      prac.results.forEach((record, i) => { if (record && record !== 'skip' && record.saved === false && record.session) persistPracticeAnswer(prac, i); });
       renderPractice();
     }
     toast('已恢复到第 ' + (Math.min(r.i, list.length - 1) + 1) + ' 题');
@@ -2755,7 +2874,8 @@
   function bind() {
     $('#recoverBanks').onclick = () => safe(restoreFromRepo(), '恢复失败');
     $('#backBtn').onclick = () => {
-      if (S.back === 'bank') openBank(S.bank.id);
+      if (S.back === 'wrong') safe(openWrongBook(S.studySource), '打开错题本失败');
+      else if (S.back === 'bank') openBank(S.bank.id);
       else {                                   // v27 修复：题库页「‹ 首页」真的切回首页（原来只重渲列表没切视图）
         $('#title').textContent = '国际法题库';
         showView('home');

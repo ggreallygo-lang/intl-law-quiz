@@ -1059,28 +1059,35 @@ body {
 .wb-grad-set { font-size: 12px; color: var(--muted); margin: 6px 0 2px; display: flex; align-items: center; gap: 4px; flex-wrap: wrap; }
 .wb-grad-set .wb-chip { padding: 2px 10px; font-size: 12px; }
 
-/* ===== v39.3：答完题后「下一题」吸底——不管解析多长按钮永远贴底可点 ===== */
-#nextWrap {
-  position: sticky;
-  bottom: 0;
-  background: var(--bg, #f5f2ec);
-  padding: 10px 0 14px;
-  z-index: 10;
-  margin-top: 10px;
-  border-top: 1px solid var(--line-soft, rgba(0,0,0,.06));
+/* 统一底部动作，确认与下一题轮替；为长解析和保存重试保留可滚动空间。 */
+#view-study.practice-view {
+  padding-bottom: calc(96px + env(safe-area-inset-bottom, 0px));
 }
-#nextWrap button { box-shadow: 0 -2px 12px rgba(0,0,0,.08); }
-[data-theme="dark"] #nextWrap { background: var(--bg, #1a1815); }
-
-/* 多选确认按钮也吸底 */
-#multiConfirm {
-  position: sticky;
-  bottom: 0;
-  z-index: 10;
-  background: var(--primary);
-  border-radius: 10px;
-  box-shadow: 0 -2px 12px rgba(0,0,0,.12);
+#view-study.practice-view.has-save-error {
+  padding-bottom: calc(160px + env(safe-area-inset-bottom, 0px));
 }
+/* viewIn 的 transform 会让 fixed 子元素相对整页定位，长题时按钮会落到屏外。 */
+#view-study.practice-view:not(.hidden) { animation: none; }
+#practiceActions.practice-actions {
+  position: fixed;
+  left: 0; right: 0; bottom: var(--practice-keyboard-offset, 0px);
+  z-index: 25;
+  width: 100%; max-width: 780px; margin: 0 auto;
+  display: flex; flex-direction: column; gap: 8px;
+  padding: 10px calc(16px + env(safe-area-inset-right, 0px))
+    calc(12px + env(safe-area-inset-bottom, 0px)) calc(16px + env(safe-area-inset-left, 0px));
+  background: var(--bg);
+  border-top: 1px solid var(--line-soft);
+  box-shadow: 0 -3px 14px rgba(0,0,0,.06);
+}
+#practiceActions #nextWrap {
+  position: static; padding: 0; margin: 0 !important;
+}
+#practiceActions .btn {
+  width: 100%; min-height: 48px; margin: 0 !important;
+  white-space: normal; overflow-wrap: anywhere;
+}
+#practiceActions #multiConfirm { position: static; }
 
 /* ===== v40：冲刺卡 + 学习报告 ===== */
 .sprint-card {

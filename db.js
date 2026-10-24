@@ -864,16 +864,45 @@
     const ps = (progressList || []).filter(p => p && p.qid);
     const ss = (sessionList || []).filter(x => x && x.id && x.qid && x.mode);
     if (!ps.length && !ss.length) return 0;
-    const db = await open();
-    return new Promise((resolve, reject) => {
-      const t = db.transaction(['progress', 'sessions'], 'readwrite');
-      const pStore = t.objectStore('progress'), sStore = t.objectStore('sessions');
-      ps.forEach(p => { p.updatedAt = Date.now(); pStore.put(p); });   // v38 #8
-      ss.forEach(x => sStore.put(Object.assign({ bankId: null, right: false, ms: 0, ts: Date.now() }, x)));
-      t.oncomplete = () => resolve(ps.length + ss.length);
-      t.onerror = () => reject(t.error);
-      t.onabort = () => reject(t.error || new Error('事务被中止'));
+    const progressIds = new Set(), sessionIds = new Set(), sessionQuestions = new Set();
+    ps.forEach(p => {
+      if (progressIds.has(p.qid)) throw new Error('一次学习提交中有重复题目进度：' + p.qid);
+      progressIds.add(p.qid);
     });
+    ss.forEach(x => {
+      if (sessionIds.has(x.id) || sessionQuestions.has(x.qid)) throw new Error('一次学习提交中有重复流水或同题多次作答');
+      sessionIds.add(x.id); sessionQuestions.add(x.qid);
+    });
+    const db = await open();
+    const t = db.transaction(['progress', 'sessions'], 'readwrite');
+    const done = txDone(t);
+    done.catch(() => {});
+    try {
+      const pStore = t.objectStore('progress'), sStore = t.objectStore('sessions');
+      const existing = await Promise.all(ss.map(x => reqP(sStore.get(x.id))));
+      const committed = new Set();
+      const pending = [];
+      ss.forEach((x, i) => {
+        const old = existing[i];
+        if (!old) { pending.push(x); return; }
+        if (old.qid !== x.qid || old.mode !== x.mode || (old.bankId == null ? null : old.bankId) !== (x.bankId == null ? null : x.bankId) ||
+            (old.right === undefined ? false : old.right) !== (x.right === undefined ? false : x.right)) {
+          throw new Error('学习流水 ID 已被不同作答使用：' + x.id);
+        }
+        if (old.voided) throw new Error('该次作答已撤销，不能重放：' + x.id);
+        committed.add(x.qid);
+      });
+      // 只跳过已提交流水对应的进度，避免旧快照重试回滚后续作答；批量中其余题仍正常保存。
+      const progress = ps.filter(p => !committed.has(p.qid));
+      progress.forEach(p => pStore.put(Object.assign({}, p, { updatedAt: Date.now() })));
+      pending.forEach(x => sStore.add(Object.assign({ bankId: null, right: false, ms: 0, ts: Date.now() }, x)));
+      await done;
+      return progress.length + pending.length;
+    } catch (e) {
+      try { t.abort(); } catch (_) {}
+      await done.catch(() => {});
+      throw e;
+    }
   }
   // 撤销一次学习提交（同事务）：progress 恢复快照——原记录本不存在则删除（不留空壳，
   // 否则撤销首学题后会留下 due=0 的僵尸记录、且该题不再算新题）；对应流水标 voided
